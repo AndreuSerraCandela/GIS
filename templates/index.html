@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>GIS Web App</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>🗺️ Sistema de Información Geográfica</h1>
+            <p>Aplicación web para visualización de datos geoespaciales</p>
+        </header>
+        
+        <main>
+            <div class="map-container">
+                <div id="map"></div>
+            </div>
+            
+            <div class="controls">
+                <h3>Controles de Datos</h3>
+                <button id="loadAllData" class="btn btn-primary">Cargar Todos los Datos</button>
+                <button id="loadRecursos" class="btn btn-success">Cargar Recursos</button>
+                <button id="loadMobiliario" class="btn btn-info">Cargar Mobiliario</button>
+                <button id="clearMap" class="btn btn-secondary">Limpiar Mapa</button>
+                <div id="status" class="status"></div>
+                
+                <div class="legend">
+                    <h4>Leyenda</h4>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #44ff44;"></div>
+                        <span>Recursos sin problemas</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #ff8800;"></div>
+                        <span>Recursos con campañas</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #ff4444;"></div>
+                        <span>Recursos con incidencias</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-icon" style="background-color: #4488ff; color: white; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">🚌</div>
+                        <span>Mobiliario sin incidencias</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-icon" style="background-color: #ff8800; color: white; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">🚌</div>
+                        <span>Mobiliario con incidencias</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="info-panel">
+                <h3>Información del Proyecto</h3>
+                <ul>
+                    <li><strong>Servidor:</strong> 192.168.10.190</li>
+                    <li><strong>Base de datos:</strong> Malla2009</li>
+                    <li><strong>Vistas:</strong> RecursosGis, MobiliarioGis</li>
+                    <li><strong>Área:</strong> Mallorca, Islas Baleares</li>
+                    <li><strong>Framework:</strong> Flask (Python)</li>
+                    <li><strong>Visualización:</strong> Leaflet.js</li>
+                    <li><strong>Geocodificación:</strong> Nominatim (OpenStreetMap)</li>
+                </ul>
+            </div>
+        </main>
+        
+        <footer>
+            <p>&copy; 2025 - Proyecto GIS Web App</p>
+        </footer>
+    </div>
+    
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
