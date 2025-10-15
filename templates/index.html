@@ -27,6 +27,131 @@
                 <button id="clearMap" class="btn btn-secondary">Limpiar Mapa</button>
                 <div id="status" class="status"></div>
                 
+                <!-- Nueva sección de búsqueda -->
+                <div class="search-section">
+                    <h3>🔍 Buscar Recursos Cerca</h3>
+                    <div class="search-controls">
+                        <div class="search-option">
+                            <label>
+                                <input type="radio" name="searchType" value="place" checked>
+                                <span>De un tipo de lugar</span>
+                            </label>
+                        </div>
+                        <div class="search-option">
+                            <label>
+                                <input type="radio" name="searchType" value="coordinates">
+                                <span>De coordenadas específicas</span>
+                            </label>
+                        </div>
+                        <div class="search-option">
+                            <label>
+                                <input type="radio" name="searchType" value="address">
+                                <span>De una dirección</span>
+                            </label>
+                        </div>
+                        <div class="search-option">
+                            <label>
+                                <input type="radio" name="searchType" value="zone">
+                                <span>De una zona personalizada</span>
+                            </label>
+                        </div>
+                    </div>
+                    
+                    <!-- Búsqueda por tipo de lugar -->
+                    <div id="placeSearch" class="search-panel active">
+                        <div class="form-group">
+                            <label for="placeType">Tipo de lugar:</label>
+                            <select id="placeType" class="form-control">
+                                <option value="">Seleccionar tipo...</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="placeRadius">Radio de búsqueda (km) *:</label>
+                            <input type="number" id="placeRadius" class="form-control" value="5" min="0.1" max="50" step="0.1" required>
+                            <small class="form-text text-muted">Obligatorio: entre 0.1 y 50 km</small>
+                        </div>
+                        <button id="searchByPlace" class="btn btn-warning">Buscar Recursos Cerca</button>
+                        <button id="useSavedLocationPlace" class="btn btn-info" title="No hay ubicación guardada. Usa 'Obtener Ubicación Actual' primero.">📍¿Donde Buscar?</button>
+                        <button id="cancelSearch" class="btn btn-secondary" style="display: none;">Cancelar Búsqueda</button>
+                    </div>
+                    
+                    <!-- Búsqueda por coordenadas -->
+                    <div id="coordinatesSearch" class="search-panel">
+                        <div class="form-group">
+                            <label for="coordLat">Latitud:</label>
+                            <input type="number" id="coordLat" class="form-control" step="any" placeholder="39.5696">
+                        </div>
+                        <div class="form-group">
+                            <label for="coordLon">Longitud:</label>
+                            <input type="number" id="coordLon" class="form-control" step="any" placeholder="2.6502">
+                        </div>
+                        <div class="form-group">
+                            <label for="coordRadius">Radio de búsqueda (km) *:</label>
+                            <input type="number" id="coordRadius" class="form-control" value="5" min="0.1" max="50" step="0.1" required>
+                            <small class="form-text text-muted">Obligatorio: entre 0.1 y 50 km</small>
+                        </div>
+                        <div class="form-group">
+                            <button type="button" class="btn btn-info btn-sm" onclick="selectCoordinatesFromMap()">📍 Seleccionar en el Mapa</button>
+                            <button type="button" class="btn btn-secondary btn-sm" onclick="clearCoordinates()">Limpiar</button>
+                        </div>
+                        <button id="searchByCoordinates" class="btn btn-warning">Buscar Recursos Cerca</button>
+                        <button id="useCurrentLocation" class="btn btn-info" title="Obtener tu ubicación actual usando GPS">📍 Obtener Ubicación Actual</button>
+                        <div id="locationStatus" class="location-status" style="display: none; margin-top: 5px; padding: 5px; background-color: #e8f5e8; border: 1px solid #4caf50; border-radius: 3px; font-size: 12px; color: #2e7d32;">
+                            <span id="locationStatusText">📍 Ubicación guardada disponible</span>
+                        </div>
+                    </div>
+                    
+                    <!-- Búsqueda por dirección -->
+                    <div id="addressSearch" class="search-panel">
+                        <div class="form-group">
+                            <label for="addressInput">Dirección:</label>
+                            <input type="text" id="addressInput" class="form-control" placeholder="Plaza España, Palma">
+                        </div>
+                        <div class="form-group">
+                            <label for="addressRadius">Radio de búsqueda (km) *:</label>
+                            <input type="number" id="addressRadius" class="form-control" value="5" min="0.1" max="50" step="0.1" required>
+                            <small class="form-text text-muted">Obligatorio: entre 0.1 y 50 km</small>
+                        </div>
+                        <button id="searchByAddress" class="btn btn-warning">Buscar Recursos Cerca</button>
+                        <button id="useSavedLocationAddress" class="btn btn-info" title="No hay ubicación guardada. Usa 'Obtener Ubicación Actual' primero.">📍 ¿Donde Buscar?</button>
+                    </div>
+                    
+                    <!-- Búsqueda por zona personalizada -->
+                    <div id="zoneSearch" class="search-panel">
+                        <div class="form-group">
+                            <label for="zoneSelect">Zona personalizada:</label>
+                            <select id="zoneSelect" class="form-control">
+                                <option value="">Seleccionar zona...</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <button id="createNewZone" class="btn btn-success btn-sm">➕ Crear Nueva Zona</button>
+                            <button id="editZone" class="btn btn-warning btn-sm" disabled>✏️ Editar Zona</button>
+                            <button id="deleteZone" class="btn btn-danger btn-sm" disabled>🗑️ Eliminar Zona</button>
+                        </div>
+                        <div class="form-group">
+                            <label for="zoneRadius">Radio de búsqueda (km) *:</label>
+                            <input type="number" id="zoneRadius" class="form-control" value="5" min="0.1" max="50" step="0.1" required>
+                            <small class="form-text text-muted">Obligatorio: entre 0.1 y 50 km</small>
+                        </div>
+                        <button id="searchByZone" class="btn btn-warning">Buscar Recursos en Zona</button>
+                        <button id="useSavedLocationZone" class="btn btn-info" title="No hay ubicación guardada. Usa 'Obtener Ubicación Actual' primero.">📍 ¿Donde Buscar?</button>
+                    </div>
+                    
+                    <div class="search-instructions">
+                        <p><strong>💡 Instrucciones:</strong></p>
+                        <ul>
+                            <li><strong>Tipo de lugar:</strong> Selecciona el tipo y haz clic en el mapa para buscar</li>
+                            <li><strong>Coordenadas:</strong> Introduce coordenadas manualmente, haz clic en el mapa o usa tu ubicación actual</li>
+                            <li><strong>Ubicación actual:</strong> La primera vez obtén tu ubicación GPS, después podrás reutilizarla fácilmente</li>
+                            <li><strong>Dirección:</strong> Escribe una dirección y busca recursos cerca</li>
+                            <li><strong>Zona personalizada:</strong> Crea zonas dibujando en el mapa y guárdalas para búsquedas futuras</li>
+                            <li><strong>Radio obligatorio:</strong> Siempre debes especificar el radio de búsqueda (0.1-50 km)</li>
+                            <li><strong>Posicionamiento:</strong> Para búsquedas por tipo de lugar, haz clic en el mapa donde quieres buscar</li>
+                        </ul>
+                    </div>
+                </div>
+                
                 <div class="legend">
                     <h4>Leyenda</h4>
                     <div class="legend-item">
@@ -49,26 +174,75 @@
                         <div class="legend-icon" style="background-color: #ff8800; color: white; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">🚌</div>
                         <span>Mobiliario con incidencias</span>
                     </div>
+                    <div class="legend-item">
+                        <div class="legend-icon" style="background-color: #9c27b0; color: white; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">📍</div>
+                        <span>Lugares encontrados</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-icon" style="background-color: #ff5722; color: white; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">🎯</div>
+                        <span>Punto de búsqueda</span>
+                    </div>
                 </div>
-            </div>
-            
-            <div class="info-panel">
-                <h3>Información del Proyecto</h3>
-                <ul>
-                    <li><strong>Servidor:</strong> 192.168.10.190</li>
-                    <li><strong>Base de datos:</strong> Malla2009</li>
-                    <li><strong>Vistas:</strong> RecursosGis, MobiliarioGis</li>
-                    <li><strong>Área:</strong> Mallorca, Islas Baleares</li>
-                    <li><strong>Framework:</strong> Flask (Python)</li>
-                    <li><strong>Visualización:</strong> Leaflet.js</li>
-                    <li><strong>Geocodificación:</strong> Nominatim (OpenStreetMap)</li>
-                </ul>
             </div>
         </main>
         
         <footer>
             <p>&copy; 2025 - Proyecto GIS Web App</p>
         </footer>
+    </div>
+    
+    <!-- Modal para crear/editar zonas -->
+    <div id="zoneModal" class="modal" style="display: none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3 id="zoneModalTitle">Crear Nueva Zona</h3>
+                <span class="close" id="closeZoneModal">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="zoneName">Nombre de la zona:</label>
+                    <input type="text" id="zoneName" class="form-control" placeholder="Ej: Centro de Palma, Zona Norte, etc.">
+                </div>
+                <div class="form-group">
+                    <label for="zoneDescription">Descripción (opcional):</label>
+                    <textarea id="zoneDescription" class="form-control" rows="3" placeholder="Describe la zona o añade notas..."></textarea>
+                </div>
+                <div class="form-group">
+                    <label>Dibujar zona en el mapa:</label>
+                    <div class="zone-instructions">
+                        <p><strong>Instrucciones:</strong></p>
+                        <ul>
+                            <li>Haz clic en "Iniciar Dibujo" para comenzar a dibujar</li>
+                            <li>Haz clic en el mapa para crear puntos de la zona</li>
+                            <li>Haz doble clic para finalizar el dibujo</li>
+                            <li>Puedes crear zonas rectangulares o poligonales</li>
+                        </ul>
+                    </div>
+                    <div class="zone-controls">
+                        <button id="startDrawing" class="btn btn-primary">🎨 Iniciar Dibujo</button>
+                        <button id="finishDrawing" class="btn btn-success" disabled>✅ Finalizar Dibujo</button>
+                        <button id="clearDrawing" class="btn btn-warning" disabled>🗑️ Limpiar</button>
+                    </div>
+                </div>
+                <div class="form-group">
+                    <label>Tipo de zona:</label>
+                    <div class="zone-type-options">
+                        <label>
+                            <input type="radio" name="zoneType" value="rectangle" checked>
+                            <span>Rectangular</span>
+                        </label>
+                        <label>
+                            <input type="radio" name="zoneType" value="polygon">
+                            <span>Poligonal</span>
+                        </label>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="saveZone" class="btn btn-success" disabled>💾 Guardar Zona</button>
+                <button id="cancelZone" class="btn btn-secondary">❌ Cancelar</button>
+            </div>
+        </div>
     </div>
     
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>

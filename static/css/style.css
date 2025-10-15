@@ -14,17 +14,17 @@ body {
 }
 
 .container {
-    max-width: 1200px;
+    max-width: 1400px;
     margin: 0 auto;
-    padding: 20px;
+    padding: 10px;
 }
 
 header {
     background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
     color: white;
-    padding: 2rem;
+    padding: 1.5rem;
     border-radius: 10px;
-    margin-bottom: 2rem;
+    margin-bottom: 1rem;
     text-align: center;
     box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
 }
@@ -41,9 +41,10 @@ header p {
 
 main {
     display: grid;
-    grid-template-columns: 1fr 300px;
-    gap: 2rem;
-    margin-bottom: 2rem;
+    grid-template-columns: 1fr 280px;
+    gap: 1rem;
+    margin-bottom: 1rem;
+    height: calc(100vh - 200px);
 }
 
 .map-container {
@@ -51,16 +52,18 @@ main {
     border-radius: 10px;
     overflow: hidden;
     box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+    height: 100%;
 }
 
 #map {
-    height: 500px;
+    height: 100%;
     width: 100%;
+    min-height: 70vh;
 }
 
 .controls {
     background: white;
-    padding: 1.5rem;
+    padding: 1rem;
     border-radius: 10px;
     box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
     height: fit-content;
@@ -143,44 +146,14 @@ main {
     border: 1px solid #f5c6cb;
 }
 
-.info-panel {
-    background: white;
-    padding: 1.5rem;
-    border-radius: 10px;
-    box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-    height: fit-content;
-}
-
-.info-panel h3 {
-    color: #667eea;
-    margin-bottom: 1rem;
-    font-size: 1.3rem;
-}
-
-.info-panel ul {
-    list-style: none;
-}
-
-.info-panel li {
-    padding: 0.5rem 0;
-    border-bottom: 1px solid #eee;
-}
-
-.info-panel li:last-child {
-    border-bottom: none;
-}
-
-.info-panel strong {
-    color: #667eea;
-}
 
 footer {
     text-align: center;
-    padding: 2rem;
+    padding: 0.5rem;
     background: #333;
     color: white;
     border-radius: 10px;
-    margin-top: 2rem;
+    margin-top: 0.5rem;
 }
 
 /* Responsive design */
@@ -303,4 +276,366 @@ footer {
 
 .container > * {
     animation: fadeIn 0.6s ease-out;
+}
+
+/* Estilos para la sección de búsqueda */
+.search-section {
+    margin-top: 1.5rem;
+    padding: 1rem;
+    background-color: #f8f9fa;
+    border-radius: 8px;
+    border: 1px solid #dee2e6;
+}
+
+.search-section h3 {
+    color: #667eea;
+    margin-bottom: 1rem;
+    font-size: 1.1rem;
+}
+
+.search-controls {
+    margin-bottom: 1rem;
+}
+
+.search-option {
+    margin-bottom: 0.5rem;
+}
+
+.search-option label {
+    display: flex;
+    align-items: center;
+    cursor: pointer;
+    font-size: 0.9rem;
+    color: #495057;
+}
+
+.search-option input[type="radio"] {
+    margin-right: 0.5rem;
+    accent-color: #667eea;
+}
+
+.search-panel {
+    display: none;
+    margin-top: 1rem;
+    padding: 1rem;
+    background-color: white;
+    border-radius: 6px;
+    border: 1px solid #e9ecef;
+}
+
+.search-panel.active {
+    display: block;
+}
+
+.form-group {
+    margin-bottom: 1rem;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 0.5rem;
+    font-weight: 500;
+    color: #495057;
+    font-size: 0.9rem;
+}
+
+.form-control {
+    width: 100%;
+    padding: 0.5rem;
+    border: 1px solid #ced4da;
+    border-radius: 4px;
+    font-size: 0.9rem;
+    transition: border-color 0.15s ease-in-out, box-shadow 0.15s ease-in-out;
+}
+
+.form-control:focus {
+    outline: none;
+    border-color: #667eea;
+    box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
+}
+
+.form-control:invalid {
+    border-color: #dc3545;
+}
+
+.form-control:valid {
+    border-color: #28a745;
+}
+
+.form-text {
+    font-size: 0.8rem;
+    color: #6c757d;
+    margin-top: 0.25rem;
+}
+
+label[for*="Radius"] {
+    color: #dc3545;
+    font-weight: 600;
+}
+
+.btn-warning {
+    background-color: #ffc107;
+    color: #212529;
+    border: none;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: all 0.3s ease;
+    margin-right: 0.5rem;
+}
+
+.btn-warning:hover {
+    background-color: #e0a800;
+    transform: translateY(-1px);
+}
+
+.search-instructions {
+    margin-top: 1rem;
+    padding: 0.75rem;
+    background-color: #e7f3ff;
+    border-radius: 6px;
+    border-left: 4px solid #667eea;
+}
+
+.search-instructions p {
+    margin-bottom: 0.5rem;
+    font-weight: 500;
+    color: #495057;
+}
+
+.search-instructions ul {
+    margin-left: 1rem;
+    color: #6c757d;
+}
+
+.search-instructions li {
+    margin-bottom: 0.25rem;
+    font-size: 0.85rem;
+}
+
+/* Estilos para marcadores de búsqueda */
+.search-marker {
+    background-color: #ff5722 !important;
+    color: white !important;
+    border: 3px solid white !important;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.3) !important;
+    font-size: 16px !important;
+    font-weight: bold !important;
+}
+
+.place-marker {
+    background-color: #9c27b0 !important;
+    color: white !important;
+    border: 2px solid white !important;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.3) !important;
+    font-size: 12px !important;
+}
+
+/* Estilos para círculos de radio */
+.radius-circle {
+    stroke: #ff5722;
+    stroke-width: 2;
+    stroke-dasharray: 5, 5;
+    fill: none;
+    opacity: 0.7;
+}
+
+/* Estilos para el modal de zonas */
+.modal {
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    background-color: rgba(0,0,0,0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.modal-content {
+    background-color: white;
+    border-radius: 10px;
+    box-shadow: 0 4px 20px rgba(0,0,0,0.3);
+    width: 90%;
+    max-width: 600px;
+    max-height: 80vh;
+    overflow-y: auto;
+}
+
+.modal-header {
+    padding: 1rem 1.5rem;
+    border-bottom: 1px solid #dee2e6;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    background-color: #f8f9fa;
+    border-radius: 10px 10px 0 0;
+}
+
+.modal-header h3 {
+    margin: 0;
+    color: #495057;
+}
+
+.close {
+    font-size: 1.5rem;
+    font-weight: bold;
+    cursor: pointer;
+    color: #6c757d;
+    line-height: 1;
+}
+
+.close:hover {
+    color: #dc3545;
+}
+
+.modal-body {
+    padding: 1.5rem;
+}
+
+.modal-footer {
+    padding: 1rem 1.5rem;
+    border-top: 1px solid #dee2e6;
+    display: flex;
+    justify-content: flex-end;
+    gap: 0.5rem;
+    background-color: #f8f9fa;
+    border-radius: 0 0 10px 10px;
+}
+
+/* Estilos para controles de zona */
+.zone-instructions {
+    background-color: #e9ecef;
+    padding: 1rem;
+    border-radius: 5px;
+    margin-bottom: 1rem;
+}
+
+.zone-instructions p {
+    margin-bottom: 0.5rem;
+    font-weight: 600;
+    color: #495057;
+}
+
+.zone-instructions ul {
+    margin: 0;
+    padding-left: 1.2rem;
+    color: #6c757d;
+}
+
+.zone-instructions li {
+    margin-bottom: 0.25rem;
+    font-size: 0.9rem;
+}
+
+.zone-controls {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    margin-bottom: 1rem;
+}
+
+.zone-type-options {
+    display: flex;
+    gap: 1rem;
+    margin-top: 0.5rem;
+}
+
+.zone-type-options label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    cursor: pointer;
+    font-weight: 500;
+}
+
+.zone-type-options input[type="radio"] {
+    margin: 0;
+}
+
+/* Estilos para zonas en el mapa */
+.zone-polygon {
+    fill: rgba(52, 152, 219, 0.2);
+    stroke: #3498db;
+    stroke-width: 2;
+    stroke-dasharray: 5, 5;
+}
+
+.zone-polygon:hover {
+    fill: rgba(52, 152, 219, 0.3);
+    stroke: #2980b9;
+}
+
+.zone-rectangle {
+    fill: rgba(46, 204, 113, 0.2);
+    stroke: #2ecc71;
+    stroke-width: 2;
+    stroke-dasharray: 5, 5;
+}
+
+.zone-rectangle:hover {
+    fill: rgba(46, 204, 113, 0.3);
+    stroke: #27ae60;
+}
+
+.zone-point {
+    fill: #e74c3c;
+    stroke: white;
+    stroke-width: 2;
+    r: 4;
+}
+
+.zone-point:hover {
+    fill: #c0392b;
+    r: 6;
+}
+
+/* Estilos para el selector de zonas */
+#zoneSelect {
+    margin-bottom: 1rem;
+}
+
+.zone-info {
+    background-color: #d1ecf1;
+    border: 1px solid #bee5eb;
+    border-radius: 5px;
+    padding: 0.75rem;
+    margin-top: 0.5rem;
+    font-size: 0.9rem;
+    color: #0c5460;
+}
+
+/* Responsive para búsqueda */
+@media (max-width: 768px) {
+    .search-section {
+        margin-top: 1rem;
+        padding: 0.75rem;
+    }
+    
+    .search-panel {
+        padding: 0.75rem;
+    }
+    
+    .btn-warning {
+        width: 100%;
+        margin-bottom: 0.5rem;
+        margin-right: 0;
+    }
+    
+    .modal-content {
+        width: 95%;
+        margin: 1rem;
+    }
+    
+    .zone-controls {
+        flex-direction: column;
+    }
+    
+    .zone-type-options {
+        flex-direction: column;
+        gap: 0.5rem;
+    }
 }

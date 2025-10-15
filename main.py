@@ -11,6 +11,7 @@ import pyodbc
 import json
 import requests
 import os
+import math
 from config.database import get_db_connection
 from config.api_keys import GEOCODING_SERVICES, SEARCH_CONFIG
 
@@ -27,6 +28,242 @@ def clean_data(data):
         return data.isoformat()
     else:
         return data
+
+def calcular_distancia_haversine(lat1, lon1, lat2, lon2):
+    """
+    Calcula la distancia entre dos puntos geográficos usando la fórmula de Haversine
+    
+    Args:
+        lat1, lon1: Coordenadas del primer punto
+        lat2, lon2: Coordenadas del segundo punto
+        
+    Returns:
+        float: Distancia en kilómetros
+    """
+    # Radio de la Tierra en kilómetros
+    R = 6371.0
+    
+    # Convertir grados a radianes
+    lat1_rad = math.radians(lat1)
+    lon1_rad = math.radians(lon1)
+    lat2_rad = math.radians(lat2)
+    lon2_rad = math.radians(lon2)
+    
+    # Diferencia de coordenadas
+    dlat = lat2_rad - lat1_rad
+    dlon = lon2_rad - lon1_rad
+    
+    # Fórmula de Haversine
+    a = math.sin(dlat/2)**2 + math.cos(lat1_rad) * math.cos(lat2_rad) * math.sin(dlon/2)**2
+    c = 2 * math.asin(math.sqrt(a))
+    
+    return R * c
+
+def buscar_lugares_cerca(lat, lon, tipo_lugar, radio_km=5):
+    """
+    Busca lugares específicos cerca de unas coordenadas usando Google Places API
+    
+    Args:
+        lat, lon: Coordenadas de referencia
+        tipo_lugar: Tipo de lugar a buscar ('pharmacy', 'gas_station', 'hospital', etc.)
+        radio_km: Radio de búsqueda en kilómetros
+        
+    Returns:
+        list: Lista de lugares encontrados con sus coordenadas
+    """
+    try:
+        # Convertir radio de km a metros para la API
+        radio_metros = radio_km * 1000
+        
+        url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
+        params = {
+            'location': f"{lat},{lon}",
+            'radius': radio_metros,
+            'type': tipo_lugar,
+            'key': GEOCODING_SERVICES['google_maps']['api_key']
+        }
+        
+        response = requests.get(url, params=params, timeout=10)
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data['status'] == 'OK':
+                lugares = []
+                for place in data['results']:
+                    lugar = {
+                        'nombre': place.get('name', 'Sin nombre'),
+                        'lat': place['geometry']['location']['lat'],
+                        'lon': place['geometry']['location']['lng'],
+                        'rating': place.get('rating', 0),
+                        'vicinity': place.get('vicinity', ''),
+                        'place_id': place.get('place_id', ''),
+                        'tipo': tipo_lugar,
+                        'distancia_km': calcular_distancia_haversine(
+                            lat, lon, 
+                            place['geometry']['location']['lat'], 
+                            place['geometry']['location']['lng']
+                        )
+                    }
+                    lugares.append(lugar)
+                
+                # Ordenar por distancia
+                lugares.sort(key=lambda x: x['distancia_km'])
+                return lugares
+            else:
+                print(f"Error en Google Places API: {data.get('status', 'Unknown error')}")
+                return []
+        else:
+            print(f"Error HTTP en Google Places API: {response.status_code}")
+            return []
+            
+    except Exception as e:
+        print(f"Error al buscar lugares cerca: {e}")
+        return []
+
+def obtener_tipos_lugares_soportados():
+    """
+    Devuelve la lista de tipos de lugares soportados por Google Places API
+    
+    Returns:
+        dict: Diccionario con tipos de lugares y sus descripciones
+    """
+    return {
+        'pharmacy': 'Farmacias',
+        'gas_station': 'Gasolineras',
+        'hospital': 'Hospitales',
+        'bank': 'Bancos',
+        'restaurant': 'Restaurantes',
+        'school': 'Colegios',
+        'university': 'Universidades',
+        'police': 'Comisarías',
+        'fire_station': 'Bomberos',
+        'post_office': 'Oficinas de correos',
+        'supermarket': 'Supermercados',
+        'shopping_mall': 'Centros comerciales',
+        'gym': 'Gimnasios',
+        'park': 'Parques',
+        'church': 'Iglesias',
+        'mosque': 'Mezquitas',
+        'synagogue': 'Sinagogas',
+        'cemetery': 'Cementerios',
+        'zoo': 'Zoológicos',
+        'museum': 'Museos',
+        'library': 'Bibliotecas',
+        'movie_theater': 'Cines',
+        'amusement_park': 'Parques de atracciones',
+        'aquarium': 'Acuarios',
+        'stadium': 'Estadios',
+        'airport': 'Aeropuertos',
+        'bus_station': 'Estaciones de autobús',
+        'train_station': 'Estaciones de tren',
+        'subway_station': 'Estaciones de metro',
+        'taxi_stand': 'Paradas de taxi',
+        'car_rental': 'Alquiler de coches',
+        'car_wash': 'Lavaderos de coches',
+        'car_repair': 'Talleres de reparación',
+        'dentist': 'Dentistas',
+        'doctor': 'Médicos',
+        'veterinary_care': 'Veterinarios',
+        'beauty_salon': 'Peluquerías',
+        'hair_care': 'Salones de belleza',
+        'spa': 'Spas',
+        'laundry': 'Lavanderías',
+        'dry_cleaning': 'Tintorerías',
+        'funeral_home': 'Funerarias',
+        'real_estate_agency': 'Inmobiliarias',
+        'insurance_agency': 'Agencias de seguros',
+        'travel_agency': 'Agencias de viajes',
+        'tourist_attraction': 'Atracciones turísticas',
+        'campground': 'Campings',
+        'rv_park': 'Parques para autocaravanas',
+        'lodging': 'Alojamientos',
+        'night_club': 'Discotecas',
+        'bar': 'Bares',
+        'cafe': 'Cafeterías',
+        'bakery': 'Panaderías',
+        'food': 'Comida',
+        'meal_takeaway': 'Comida para llevar',
+        'meal_delivery': 'Comida a domicilio',
+        'liquor_store': 'Licorerías',
+        'convenience_store': 'Tiendas de conveniencia',
+        'clothing_store': 'Tiendas de ropa',
+        'shoe_store': 'Zapaterías',
+        'jewelry_store': 'Joyerías',
+        'electronics_store': 'Tiendas de electrónica',
+        'furniture_store': 'Tiendas de muebles',
+        'home_goods_store': 'Tiendas de hogar',
+        'hardware_store': 'Ferreterías',
+        'book_store': 'Librerías',
+        'bicycle_store': 'Tiendas de bicicletas',
+        'sporting_goods_store': 'Tiendas de deportes',
+        'pet_store': 'Tiendas de mascotas',
+        'florist': 'Floristerías',
+        'gift_shop': 'Tiendas de regalos',
+        'art_gallery': 'Galerías de arte',
+        'atm': 'Cajeros automáticos',
+        'embassy': 'Embajadas',
+        'local_government_office': 'Oficinas gubernamentales',
+        'courthouse': 'Tribunales',
+        'city_hall': 'Ayuntamientos'
+    }
+
+def geocodificar_direccion(direccion):
+    """
+    Geocodifica una dirección usando Google Maps API
+    
+    Args:
+        direccion: Dirección a geocodificar
+        
+    Returns:
+        tuple: (lat, lon) o (None, None) si no se encuentra
+    """
+    try:
+        print(f"Geocodificando dirección: {direccion}")
+        
+        # Verificar si la API key está disponible
+        if not GEOCODING_SERVICES['google_maps']['api_key']:
+            print("API key de Google Maps no configurada")
+            return None, None
+        
+        url = "https://maps.googleapis.com/maps/api/geocode/json"
+        params = {
+            'address': direccion,
+            'key': GEOCODING_SERVICES['google_maps']['api_key'],
+            'region': 'es',
+            'components': 'country:ES'
+        }
+        
+        print(f"URL de geocodificación: {url}")
+        print(f"Parámetros: {params}")
+        
+        response = requests.get(url, params=params, timeout=10)
+        print(f"Respuesta HTTP: {response.status_code}")
+        
+        if response.status_code == 200:
+            data = response.json()
+            print(f"Respuesta de la API: {data}")
+            
+            if data['status'] == 'OK' and data['results']:
+                location = data['results'][0]['geometry']['location']
+                lat = location['lat']
+                lon = location['lng']
+                print(f"Coordenadas encontradas: {lat}, {lon}")
+                return lat, lon
+            else:
+                print(f"Error en geocodificación: {data.get('status', 'Unknown error')}")
+                if 'error_message' in data:
+                    print(f"Mensaje de error: {data['error_message']}")
+        else:
+            print(f"Error HTTP: {response.status_code}")
+            print(f"Respuesta: {response.text}")
+        
+        return None, None
+        
+    except Exception as e:
+        print(f"Error al geocodificar dirección: {e}")
+        import traceback
+        print(f"Traceback: {traceback.format_exc()}")
+        return None, None
 
 def geocode_with_google_maps(parada, description, address):
     """
@@ -586,7 +823,7 @@ def get_recursos():
         cursor = conn.cursor()
         
         # Query simplificada para obtener recursos básicos
-        query = "SELECT [No_], [Name], [PuntoX], [PuntoY] FROM [dbo].[RecursosGis]"
+        query = "SELECT [No_], [Name], [PuntoX], [PuntoY],Incidencia,Campañas FROM [dbo].[RecursosGis]"
         cursor.execute(query)
         results = cursor.fetchall()
         
@@ -599,40 +836,32 @@ def get_recursos():
             recurso = dict(zip(columns, row))
             recurso = clean_data(recurso)
             
-            # Inicializar campos de incidencias
-            recurso['tiene_incidencia'] = 0
-            recurso['total_incidencias'] = 0
-            recurso['campañas'] = []
-            recurso['incidencias'] = []
+            # Inicializar campos básicos (sin cargar datos completos)
+            recurso['total_campanas'] = recurso['Campañas']
+            recurso['total_incidencias'] = recurso['Incidencia']
+            recurso['tiene_incidencia'] = 1 if recurso['total_incidencias'] > 0 else 0
+            recurso['tiene_campana'] = 1 if recurso['total_campanas'] > 0 else 0
             
-            try:
-                # Obtener campañas para este recurso
-                campanas_query = "Select Distinct [Nº Recurso],Campaña,Inicio,Fin, MAX(Cliente) As cliente from Campañas WHERE [Nº Recurso] = ? group By [Nº Recurso],Campaña,Inicio,Fin"
-                cursor.execute(campanas_query, (recurso['No_'],))
-                campanas_results = cursor.fetchall()
-                campanas_columns = [column[0] for column in cursor.description]
-                campanas_data = [dict(zip(campanas_columns, row)) for row in campanas_results]
-                recurso['campañas'] = clean_data(campanas_data)
-            except Exception as e:
-                print(f"Error al obtener campañas para recurso {recurso['No_']}: {e}")
-                recurso['campañas'] = []
+            # try:
+            #     # Solo obtener conteo de campañas
+            #     campanas_count_query = "SELECT COUNT(DISTINCT [Campaña]) as total FROM Campañas WHERE [Nº Recurso] = ?"
+            #     cursor.execute(campanas_count_query, (recurso['No_'],))
+            #     campanas_count = cursor.fetchone()[0]
+            #     recurso['total_campanas'] = campanas_count
+            # except Exception as e:
+            #     print(f"Error al obtener conteo de campañas para recurso {recurso['No_']}: {e}")
+            #     recurso['total_campanas'] = 0
             
-            try:
-                # Obtener incidencias para este recurso
-                incidencias_query = "SELECT * FROM [dbo].[Incidencias] WHERE [Nº Recurso] = ?"
-                cursor.execute(incidencias_query, (recurso['No_'],))
-                incidencias_results = cursor.fetchall()
-                incidencias_columns = [column[0] for column in cursor.description]
-                incidencias_data = [dict(zip(incidencias_columns, row)) for row in incidencias_results]
-                recurso['incidencias'] = clean_data(incidencias_data)
-                
-                # Actualizar estado de incidencias
-                recurso['total_incidencias'] = len(recurso['incidencias'])
-                recurso['tiene_incidencia'] = 1 if recurso['total_incidencias'] > 0 else 0
-                
-            except Exception as e:
-                print(f"Error al obtener incidencias para recurso {recurso['No_']}: {e}")
-                recurso['incidencias'] = []
+            # try:
+            #     # Solo obtener conteo de incidencias
+            #     incidencias_count_query = "SELECT COUNT(*) as total FROM [dbo].[Incidencias] WHERE [Nº Recurso] = ? AND [Tipo] = 'Recurso'"
+            #     cursor.execute(incidencias_count_query, (recurso['No_'],))
+            #     incidencias_count = cursor.fetchone()[0]
+            #     recurso['total_incidencias'] = incidencias_count
+            #     recurso['tiene_incidencia'] = 1 if incidencias_count > 0 else 0
+            # except Exception as e:
+            #     print(f"Error al obtener conteo de incidencias para recurso {recurso['No_']}: {e}")
+            #     recurso['total_incidencias'] = 0
             
             recursos_data.append(recurso)
         
@@ -895,6 +1124,314 @@ def geocoding_stats():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/recursos-cerca-lugares')
+def get_recursos_cerca_lugares():
+    """API endpoint genérico para obtener recursos cerca de cualquier tipo de lugar"""
+    try:
+        # Obtener parámetros de la consulta
+        lat = request.args.get('lat', type=float)
+        lon = request.args.get('lon', type=float)
+        tipo_lugar = request.args.get('tipo_lugar')
+        radio_km = request.args.get('radio', 5, type=float)
+        
+        if not lat or not lon:
+            return jsonify({"error": "Se requieren parámetros lat y lon"}), 400
+        
+        if not tipo_lugar:
+            return jsonify({"error": "Se requiere el parámetro tipo_lugar"}), 400
+        
+        # Validar que el tipo de lugar sea soportado
+        tipos_soportados = obtener_tipos_lugares_soportados()
+        if tipo_lugar not in tipos_soportados:
+            return jsonify({
+                "error": f"Tipo de lugar '{tipo_lugar}' no soportado",
+                "tipos_soportados": list(tipos_soportados.keys()),
+                "descripciones": tipos_soportados
+            }), 400
+        
+        # Buscar lugares cerca
+        lugares = buscar_lugares_cerca(lat, lon, tipo_lugar, radio_km)
+        
+        if not lugares:
+            return jsonify({
+                "mensaje": f"No se encontraron {tipos_soportados[tipo_lugar].lower()} en el área especificada",
+                "tipo_lugar": tipo_lugar,
+                "descripcion": tipos_soportados[tipo_lugar],
+                "lugares": [],
+                "recursos_cerca": []
+            })
+        
+        # Obtener todos los recursos de la base de datos
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        query = "SELECT [No_], [Name], [PuntoX], [PuntoY], Incidencia, Campañas FROM [dbo].[RecursosGis] WHERE [PuntoX] != 0 AND [PuntoY] != 0"
+        cursor.execute(query)
+        recursos_results = cursor.fetchall()
+        
+        columns = [column[0] for column in cursor.description]
+        recursos_data = []
+        
+        for row in recursos_results:
+            recurso = dict(zip(columns, row))
+            recurso = clean_data(recurso)
+            
+            # Calcular distancia a cada lugar
+            distancias_lugares = []
+            for lugar in lugares:
+                distancia = calcular_distancia_haversine(
+                    lugar['lat'], lugar['lon'],
+                    recurso['PuntoY'], recurso['PuntoX']
+                )
+                distancias_lugares.append({
+                    'lugar': lugar['nombre'],
+                    'distancia_km': round(distancia, 2)
+                })
+            recurso['total_campanas'] = recurso['Campañas']
+            recurso['total_incidencias'] = recurso['Incidencia']
+            recurso['tiene_incidencia'] = 1 if recurso['total_incidencias'] > 0 else 0
+            recurso['tiene_campana'] = 1 if recurso['total_campanas'] > 0 else 0
+            # Encontrar el lugar más cercano
+            lugar_mas_cercano = min(distancias_lugares, key=lambda x: x['distancia_km'])
+            
+            if lugar_mas_cercano['distancia_km'] <= radio_km:
+                recurso['lugar_mas_cercano'] = lugar_mas_cercano
+                recurso['distancia_a_lugar_km'] = lugar_mas_cercano['distancia_km']
+                recursos_data.append(recurso)
+        
+        # Ordenar por distancia al lugar más cercano
+        recursos_data.sort(key=lambda x: x['distancia_a_lugar_km'])
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "tipo_busqueda": tipo_lugar,
+            "descripcion": tipos_soportados[tipo_lugar],
+            "coordenadas_referencia": {"lat": lat, "lon": lon},
+            "radio_km": radio_km,
+            "lugares_encontrados": len(lugares),
+            "lugares": lugares,
+            "recursos_cerca": len(recursos_data),
+            "recursos": recursos_data
+        })
+        
+    except Exception as e:
+        print(f"Error en endpoint /api/recursos-cerca-lugares: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/recursos-cerca-direccion')
+def get_recursos_cerca_direccion():
+    """API endpoint para obtener recursos cerca de una dirección específica"""
+    try:
+        # Obtener parámetros de la consulta
+        direccion = request.args.get('direccion')
+        radio_km = request.args.get('radio', 5, type=float)
+        
+        print(f"Búsqueda por dirección - Dirección: {direccion}, Radio: {radio_km}")
+        
+        if not direccion:
+            print("Error: No se proporcionó dirección")
+            return jsonify({"error": "Se requiere el parámetro direccion"}), 400
+        
+        if not radio_km or radio_km <= 0 or radio_km > 50:
+            print(f"Error: Radio inválido: {radio_km}")
+            return jsonify({"error": "Radio debe estar entre 0.1 y 50 km"}), 400
+        
+        # Geocodificar la dirección
+        print("Iniciando geocodificación...")
+        lat, lon = geocodificar_direccion(direccion)
+        
+        if not lat or not lon:
+            print("Error: No se pudo geocodificar la dirección")
+            return jsonify({
+                "error": "No se pudo geocodificar la dirección proporcionada",
+                "direccion": direccion,
+                "sugerencia": "Verifica que la dirección sea correcta y esté en España"
+            }), 400
+        
+        # Obtener todos los recursos de la base de datos
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        query = "SELECT [No_], [Name], [PuntoX], [PuntoY], Incidencia, Campañas FROM [dbo].[RecursosGis] WHERE [PuntoX] != 0 AND [PuntoY] != 0"
+        cursor.execute(query)
+        recursos_results = cursor.fetchall()
+        
+        columns = [column[0] for column in cursor.description]
+        recursos_data = []
+        
+        for row in recursos_results:
+            recurso = dict(zip(columns, row))
+            recurso = clean_data(recurso)
+            
+            # Calcular distancia a la dirección
+            distancia = calcular_distancia_haversine(
+                lat, lon,
+                recurso['PuntoY'], recurso['PuntoX']
+            )
+            recurso['total_campanas'] = recurso['Campañas']
+            recurso['total_incidencias'] = recurso['Incidencia']
+            recurso['tiene_incidencia'] = 1 if recurso['total_incidencias'] > 0 else 0
+            recurso['tiene_campana'] = 1 if recurso['total_campanas'] > 0 else 0
+            if distancia <= radio_km:
+                recurso['distancia_a_direccion_km'] = round(distancia, 2)
+                recursos_data.append(recurso)
+        
+        # Ordenar por distancia
+        recursos_data.sort(key=lambda x: x['distancia_a_direccion_km'])
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "tipo_busqueda": "direccion",
+            "direccion_buscada": direccion,
+            "coordenadas_encontradas": {"lat": lat, "lon": lon},
+            "radio_km": radio_km,
+            "recursos_cerca": len(recursos_data),
+            "recursos": recursos_data
+        })
+        
+    except Exception as e:
+        print(f"Error en endpoint /api/recursos-cerca-direccion: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/recursos-cerca')
+def get_recursos_cerca():
+    """API endpoint unificado para buscar recursos cerca de cualquier tipo de lugar o dirección"""
+    try:
+        # Obtener parámetros de la consulta
+        tipo = request.args.get('tipo')  # 'direccion' o cualquier tipo de lugar
+        lat = request.args.get('lat', type=float)
+        lon = request.args.get('lon', type=float)
+        direccion = request.args.get('direccion')
+        radio_km = request.args.get('radio', 5, type=float)
+        
+        if not tipo:
+            return jsonify({"error": "Se requiere el parámetro tipo"}), 400
+        
+        if tipo == 'direccion':
+            if not direccion:
+                return jsonify({"error": "Para tipo 'direccion' se requiere el parámetro direccion"}), 400
+            # Redirigir al endpoint específico de dirección
+            return get_recursos_cerca_direccion()
+        else:
+            # Es un tipo de lugar específico
+            if not lat or not lon:
+                return jsonify({"error": f"Para tipo '{tipo}' se requieren los parámetros lat y lon"}), 400
+            
+            # Usar el endpoint genérico de lugares
+            # Simular la llamada al endpoint genérico
+            request.args = request.args.copy()
+            request.args['tipo_lugar'] = tipo
+            return get_recursos_cerca_lugares()
+            
+    except Exception as e:
+        print(f"Error en endpoint /api/recursos-cerca: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/tipos-lugares')
+def get_tipos_lugares():
+    """API endpoint para obtener todos los tipos de lugares soportados"""
+    try:
+        tipos_soportados = obtener_tipos_lugares_soportados()
+        return jsonify({
+            "total_tipos": len(tipos_soportados),
+            "tipos_lugares": tipos_soportados
+        })
+    except Exception as e:
+        print(f"Error en endpoint /api/tipos-lugares: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/recursos-cerca-coordenadas')
+def get_recursos_cerca_coordenadas():
+    """API endpoint para obtener recursos cerca de coordenadas específicas"""
+    try:
+        # Obtener parámetros de la consulta
+        lat = request.args.get('lat', type=float)
+        lon = request.args.get('lon', type=float)
+        radio_km = request.args.get('radio', 5, type=float)
+        
+        if not lat or not lon:
+            return jsonify({"error": "Se requieren parámetros lat y lon"}), 400
+        
+        # Obtener todos los recursos de la base de datos
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        query = "SELECT [No_], [Name], [PuntoX], [PuntoY], Incidencia, Campañas FROM [dbo].[RecursosGis] WHERE [PuntoX] != 0 AND [PuntoY] != 0"
+        cursor.execute(query)
+        recursos_results = cursor.fetchall()
+        
+        columns = [column[0] for column in cursor.description]
+        recursos_data = []
+        
+        for row in recursos_results:
+            recurso = dict(zip(columns, row))
+            recurso = clean_data(recurso)
+            
+            # Calcular distancia a las coordenadas especificadas
+            distancia = calcular_distancia_haversine(
+                lat, lon,
+                recurso['PuntoY'], recurso['PuntoX']
+            )
+            recurso['total_campanas'] = recurso['Campañas']
+            recurso['total_incidencias'] = recurso['Incidencia']
+            recurso['tiene_incidencia'] = 1 if recurso['total_incidencias'] > 0 else 0
+            recurso['tiene_campana'] = 1 if recurso['total_campanas'] > 0 else 0
+            if distancia <= radio_km:
+                recurso['distancia_km'] = round(distancia, 2)
+                recursos_data.append(recurso)
+        
+        # Ordenar por distancia
+        recursos_data.sort(key=lambda x: x['distancia_km'])
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "tipo_busqueda": "coordenadas",
+            "coordenadas_referencia": {"lat": lat, "lon": lon},
+            "radio_km": radio_km,
+            "recursos_cerca": len(recursos_data),
+            "recursos": recursos_data
+        })
+        
+    except Exception as e:
+        print(f"Error en endpoint /api/recursos-cerca-coordenadas: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/test-direccion')
+def test_direccion():
+    """Endpoint de prueba para verificar la geocodificación de direcciones"""
+    try:
+        direccion = request.args.get('direccion', 'Plaza España, Palma de Mallorca')
+        
+        print(f"Probando geocodificación con: {direccion}")
+        
+        lat, lon = geocodificar_direccion(direccion)
+        
+        if lat and lon:
+            return jsonify({
+                "status": "success",
+                "direccion": direccion,
+                "coordenadas": {"lat": lat, "lon": lon},
+                "mensaje": "Geocodificación exitosa"
+            })
+        else:
+            return jsonify({
+                "status": "error",
+                "direccion": direccion,
+                "mensaje": "No se pudo geocodificar la dirección"
+            }), 400
+            
+    except Exception as e:
+        return jsonify({
+            "status": "error",
+            "mensaje": str(e)
+        }), 500
+
 @app.route('/api/health')
 def health_check():
     """Endpoint para verificar el estado de la aplicación"""
@@ -940,6 +1477,11 @@ def get_mobiliario_incidencias(emplazamiento_id):
     """API endpoint para obtener incidencias de un mobiliario específico"""
     try:
         print(f"🔍 SOLICITUD DE INCIDENCIAS para emplazamiento: {emplazamiento_id}")
+        print(f"🔍 Tipo de emplazamiento_id: {type(emplazamiento_id)}")
+        
+        # Verificar que el emplazamiento_id sea válido
+        if not emplazamiento_id or emplazamiento_id.strip() == '':
+            return jsonify({"error": "Emplazamiento ID no válido"}), 400
         
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -970,6 +1512,7 @@ def get_mobiliario_incidencias(emplazamiento_id):
         
         # Obtener nombres de columnas
         columns = [column[0] for column in cursor.description]
+        print(f"📊 Columnas: {columns}")
         
         # Convertir a lista de diccionarios
         incidencias_data = []
@@ -990,6 +1533,105 @@ def get_mobiliario_incidencias(emplazamiento_id):
         
     except Exception as e:
         print(f"❌ Error en endpoint /api/mobiliario/{emplazamiento_id}/incidencias: {e}")
+        import traceback
+        print(f"❌ Traceback completo: {traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/recursos/<recurso_id>/detalles')
+def get_recurso_detalles(recurso_id):
+    """API endpoint para obtener incidencias y campañas de un recurso específico"""
+    try:
+        print(f"🔍 SOLICITUD DE DETALLES para recurso: {recurso_id}")
+        print(f"🔍 Tipo de recurso_id: {type(recurso_id)}")
+        
+        # Verificar que el recurso_id sea válido
+        if not recurso_id or recurso_id.strip() == '':
+            return jsonify({"error": "Recurso ID no válido"}), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Query para obtener incidencias del recurso
+        incidencias_query = """
+        SELECT 
+            [timestamp],
+            [Nº Incidencia],
+            [Fecha],
+            [Motivo],
+            [Nº Recurso],
+            [Incidencia de Bloqueo],
+            [Tipo],
+            [Emplazamiento]
+        FROM [dbo].[Incidencias] 
+        WHERE [Nº Recurso] = ? AND [Tipo] = 'Recurso'
+        ORDER BY [Fecha] DESC
+        """
+        
+        print(f"📊 Ejecutando query de incidencias: {incidencias_query}")
+        print(f"📊 Con parámetro: {recurso_id}")
+        
+        cursor.execute(incidencias_query, (recurso_id,))
+        incidencias_results = cursor.fetchall()
+        
+        print(f"📊 Incidencias encontradas: {len(incidencias_results)}")
+        
+        # Obtener nombres de columnas de incidencias
+        incidencias_columns = [column[0] for column in cursor.description]
+        
+        # Convertir incidencias a lista de diccionarios
+        incidencias_data = []
+        for row in incidencias_results:
+            incidencia = dict(zip(incidencias_columns, row))
+            incidencias_data.append(clean_data(incidencia))
+        
+        # Query para obtener campañas del recurso
+        campanas_query = """
+        SELECT 
+            Distinct
+            [Campaña],
+            [Inicio],
+            [Fin],
+            Max([Cliente]) as [Cliente]
+        FROM [dbo].[Campañas] 
+        WHERE [Nº Recurso] = ?
+        Group by [Campaña], [Inicio], [Fin]
+        ORDER BY [Inicio] DESC
+        """
+        
+        print(f"📊 Ejecutando query de campañas: {campanas_query}")
+        print(f"📊 Con parámetro: {recurso_id}")
+        
+        cursor.execute(campanas_query, (recurso_id,))
+        campanas_results = cursor.fetchall()
+        
+        print(f"📊 Campañas encontradas: {len(campanas_results)}")
+        
+        # Obtener nombres de columnas de campañas
+        campanas_columns = [column[0] for column in cursor.description]
+        
+        # Convertir campañas a lista de diccionarios
+        campanas_data = []
+        for row in campanas_results:
+            campana = dict(zip(campanas_columns, row))
+            campanas_data.append(clean_data(campana))
+        
+        conn.close()
+        
+        print(f"✅ Respuesta enviada: {len(incidencias_data)} incidencias y {len(campanas_data)} campañas para recurso {recurso_id}")
+        
+        return jsonify({
+            "success": True,
+            "recurso_id": recurso_id,
+            "total_incidencias": len(incidencias_data),
+            "total_campanas": len(campanas_data),
+            "incidencias": incidencias_data,
+            "campanas": campanas_data
+        })
+        
+    except Exception as e:
+        print(f"❌ Error en endpoint /api/recursos/{recurso_id}/detalles: {e}")
+        import traceback
+        print(f"❌ Traceback completo: {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
