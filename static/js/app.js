@@ -13,13 +13,675 @@ let currentSearchData = null;
 let currentClickHandler = null;
 let savedLocationbutton = null;
 
+// Variables para el sistema de zonas
+let isDrawingZone = false;
+let zonePoints = [];
+let zoneDrawingLayer = null;
+
+console.log('🔧 Variables globales inicializadas:');
+console.log('  - map:', map);
+console.log('  - isDrawingZone:', isDrawingZone);
+console.log('  - zonePoints:', zonePoints);
+console.log('  - zoneDrawingLayer:', zoneDrawingLayer);
+
 // Variables para zonas personalizadas
 let customZones = [];
 let currentZone = null;
-let isDrawingZone = false;
-let zonePoints = [];
 let zoneLayer = null;
-let zoneDrawingLayer = null;
+
+// Variables para selección de recursos
+let recursosSeleccionados = new Set(); // Almacena los No_ de recursos seleccionados
+let recursosDataMap = new Map(); // Almacena los datos completos de cada recurso por No_
+
+// Función común para crear un popup completo de recurso con carga de detalles
+function crearPopupRecurso(marker, recurso) {
+    // Almacenar datos del recurso
+    recursosDataMap.set(recurso.No_, recurso);
+    
+    // Marcar como seleccionado por defecto
+    recursosSeleccionados.add(recurso.No_);
+    
+    // Crear tooltip simple inicial (solo información básica)
+    const simpleTooltip = `
+        <div style="max-width: 350px; padding: 5px;">
+            <h4>🔧 Recurso: ${recurso.Name || 'Sin nombre'}</h4>
+            <p><strong>Nº:</strong> ${recurso.No_}</p>
+            ${recurso['Tipo Recurso'] ? `<p><strong>Tipo de Recurso:</strong> ${recurso['Tipo Recurso']}</p>` : ''}
+            ${recurso.Empresa ? `<p><strong>Empresa:</strong> ${recurso.Empresa}</p>` : ''}
+            <p><strong>Estado:</strong> ${recurso.tiene_incidencia && recurso.total_incidencias > 0 ? '🚨 Con incidencias' : recurso.total_campanas > 0 ? '📋 Con campañas' : '✅ Sin problemas'}</p>
+            <p><strong>Total campañas:</strong> ${recurso.total_campanas || 0}</p>
+            <p><strong>Total incidencias:</strong> ${recurso.total_incidencias || 0}</p>
+            <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #ddd;">
+                <label style="display: flex; align-items: center; cursor: pointer;">
+                    <input type="checkbox" id="select-${recurso.No_}" 
+                           checked 
+                           onchange="toggleRecursoSeleccionado('${recurso.No_}')" 
+                           style="margin-right: 8px;">
+                    <span>Deseleccionar</span>
+                </label>
+            </div>
+            <p style="text-align: center; margin-top: 5px; font-size: 12px; color: #666;">
+                <em>Haz clic para ver detalles completos</em>
+            </p>
+        </div>
+    `;
+    
+    // Usar tooltip simple inicialmente
+    marker.bindPopup(simpleTooltip);
+    
+    // Crear tooltip completo solo cuando se necesite
+    marker.on('click', async function() {
+        console.log(`🖱️ Click en recurso: ${recurso.No_}`);
+        
+        // Mostrar tooltip de carga
+        const loadingTooltip = `
+            <div style="max-width: 300px; padding: 10px; text-align: center;">
+                <h4>🔧 ${recurso.Name || 'Sin nombre'}</h4>
+                <p>Cargando detalles...</p>
+                <div style="border: 2px solid #f3f3f3; border-top: 2px solid #3498db; border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; margin: 10px auto;"></div>
+            </div>
+        `;
+        marker.setPopupContent(loadingTooltip);
+        
+        try {
+            // Cargar detalles desde el API
+            console.log(`🔍 Cargando detalles para recurso: ${recurso.No_}`);
+            const urlDetalles = `/api/recursos/${recurso.No_}/detalles`;
+            console.log(`📡 URL de petición detalles: ${urlDetalles}`);
+            
+            // Obtener fechas para filtrar campañas
+            const fechaDesde = document.getElementById('fechaDesde')?.value || '';
+            const fechaHasta = document.getElementById('fechaHasta')?.value || '';
+            const empresa = recurso.Empresa || '';
+            
+            console.log(`📅 Fechas para filtrar campañas: desde=${fechaDesde}, hasta=${fechaHasta}, empresa=${empresa}`);
+            
+            // Construir URL para campañas con filtros
+            let urlCampanas = '/api/campanas?';
+            const paramsCampanas = new URLSearchParams();
+            paramsCampanas.append('no_recurso', recurso.No_);
+            if (fechaDesde) paramsCampanas.append('fecha_desde', fechaDesde);
+            if (fechaHasta) paramsCampanas.append('fecha_hasta', fechaHasta);
+            if (empresa) paramsCampanas.append('empresa', empresa);
+            urlCampanas += paramsCampanas.toString();
+            
+            console.log(`📡 URL de petición campañas: ${urlCampanas}`);
+            console.log(`📡 Iniciando petición a /api/campanas...`);
+            
+            // Cargar detalles e incidencias
+            const responseDetalles = await fetch(urlDetalles);
+            console.log(`📡 Respuesta detalles recibida:`, responseDetalles.status, responseDetalles.statusText);
+            
+            if (!responseDetalles.ok) {
+                throw new Error(`Error al cargar detalles: ${responseDetalles.status}`);
+            }
+            
+            // Cargar detalles e incidencias primero
+            const dataDetalles = await responseDetalles.json();
+            console.log(`📊 Datos de detalles recibidos:`, dataDetalles);
+            
+            // Cargar campañas con filtros
+            console.log(`📡 Iniciando fetch a: ${urlCampanas}`);
+            let responseCampanas;
+            try {
+                responseCampanas = await fetch(urlCampanas);
+                console.log(`📡 Respuesta campañas recibida:`, responseCampanas.status, responseCampanas.statusText);
+            } catch (fetchError) {
+                console.error(`❌ Error en fetch de campañas:`, fetchError);
+                throw fetchError;
+            }
+            
+            let dataCampanas = { datos: [], total_registros: 0 };
+            
+            if (responseCampanas.ok) {
+                try {
+                    dataCampanas = await responseCampanas.json();
+                    console.log(`✅ Campañas parseadas correctamente:`, dataCampanas);
+                } catch (jsonError) {
+                    console.error(`❌ Error parseando JSON de campañas:`, jsonError);
+                    const textResponse = await responseCampanas.text();
+                    console.error(`❌ Respuesta de texto:`, textResponse);
+                }
+            } else {
+                console.warn(`⚠️ Error al cargar campañas: ${responseCampanas.status}`);
+                const errorText = await responseCampanas.text();
+                console.warn(`⚠️ Mensaje de error:`, errorText);
+            }
+            
+            console.log(`📊 Campañas recibidas:`, dataCampanas);
+            console.log(`📊 Total campañas:`, dataCampanas.total_registros || 0);
+            console.log(`📊 Longitud array campañas:`, dataCampanas.datos ? dataCampanas.datos.length : 0);
+            
+            if (dataCampanas.datos && dataCampanas.datos.length > 0) {
+                console.log(`📊 Primera campaña ejemplo:`, dataCampanas.datos[0]);
+                console.log(`📊 Campos de la primera campaña:`, Object.keys(dataCampanas.datos[0]));
+            } else {
+                console.log(`⚠️ No hay datos de campañas en la respuesta`);
+            }
+            
+            // Usar campañas de la API de campañas si están disponibles, sino usar las de detalles
+            const campanas = dataCampanas.datos && dataCampanas.datos.length > 0 
+                ? dataCampanas.datos 
+                : (dataDetalles.campanas || []);
+            const totalCampanas = dataCampanas.total_registros || dataDetalles.total_campanas || 0;
+            
+            let tooltipContent = `
+                <div style="max-width: 400px; max-height: 500px; overflow-y: auto; padding: 5px;">
+                    <h4>🔧 Recurso: ${recurso.Name || 'Sin nombre'}</h4>
+                    <p><strong>Nº:</strong> ${recurso.No_}</p>
+                    ${recurso['Tipo Recurso'] ? `<p><strong>Tipo de Recurso:</strong> ${recurso['Tipo Recurso']}</p>` : ''}
+                    ${recurso.Empresa ? `<p><strong>Empresa:</strong> ${recurso.Empresa}</p>` : ''}
+                    <p><strong>Estado:</strong> ${dataDetalles.total_incidencias > 0 ? '🚨 Con incidencias' : totalCampanas > 0 ? '📋 Con campañas' : '✅ Sin problemas'}</p>
+                    <p><strong>Total campañas:</strong> ${totalCampanas}</p>
+                    <p><strong>Total incidencias:</strong> ${dataDetalles.total_incidencias || 0}</p>
+                    <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #ddd;">
+                        <label style="display: flex; align-items: center; cursor: pointer;">
+                            <input type="checkbox" id="select-detail-${recurso.No_}" 
+                                   ${recursosSeleccionados.has(recurso.No_) ? 'checked' : ''} 
+                                   onchange="toggleRecursoSeleccionado('${recurso.No_}')" 
+                                   style="margin-right: 8px;">
+                            <span>${recursosSeleccionados.has(recurso.No_) ? 'Deseleccionar' : 'Seleccionar para exportar'}</span>
+                        </label>
+                    </div>
+            `;
+            
+            // Mostrar campañas
+            if (campanas && Array.isArray(campanas) && campanas.length > 0) {
+                console.log(`📋 Mostrando ${campanas.length} campañas`);
+                console.log(`📋 Estructura de campañas:`, campanas);
+                tooltipContent += `<h5 style="margin-top: 15px; margin-bottom: 10px;">📋 Campañas (${campanas.length}):</h5>`;
+                campanas.forEach((campana, index) => {
+                    console.log(`📋 Procesando campaña ${index + 1}:`, campana);
+                    tooltipContent += `<div style="margin-bottom: 10px; padding: 8px; background-color: #f8f9fa; border-left: 3px solid #007bff; border-radius: 4px;">`;
+                    tooltipContent += `<strong style="color: #007bff; font-size: 1.05em;">Campaña ${index + 1}</strong><br><br>`;
+                    
+                    // Mostrar todos los campos disponibles para debugging
+                    console.log(`📋 Campos de campaña ${index + 1}:`, Object.keys(campana));
+                    
+                    // Intentar con diferentes nombres de campos posibles
+                    const nombreCampana = campana.Campaña || campana['Campaña'] || campana.campana || '';
+                    const cliente = campana.Cliente || campana['Cliente'] || campana.cliente || '';
+                    const inicio = campana.Inicio || campana['Inicio'] || campana.inicio || '';
+                    const fin = campana.Fin || campana['Fin'] || campana.fin || '';
+                    const noIncidencia = campana['Nº Incidencia'] || campana['Nº Incidencia'] || campana.no_incidencia || '';
+                    
+                    if (nombreCampana) {
+                        tooltipContent += `<strong>📌 Nombre:</strong> ${nombreCampana}<br>`;
+                    }
+                    
+                    if (cliente) {
+                        tooltipContent += `<strong>👤 Cliente:</strong> ${cliente}<br>`;
+                    }
+                    
+                    if (inicio) {
+                        tooltipContent += `<strong>📅 Inicio:</strong> ${formatearFecha(inicio)}<br>`;
+                    }
+                    
+                    if (fin) {
+                        tooltipContent += `<strong>📅 Fin:</strong> ${formatearFecha(fin)}<br>`;
+                    }
+                    
+                    // Calcular duración si hay fechas
+                    if (inicio && fin) {
+                        try {
+                            const inicioDate = new Date(inicio);
+                            const finDate = new Date(fin);
+                            const diffTime = Math.abs(finDate - inicioDate);
+                            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                            tooltipContent += `<strong>⏱️ Duración:</strong> ${diffDays} día${diffDays !== 1 ? 's' : ''}<br>`;
+                        } catch (e) {
+                            console.warn(`⚠️ Error calculando duración:`, e);
+                        }
+                    }
+                    
+                    if (noIncidencia) {
+                        tooltipContent += `<strong>🔢 Nº Incidencia:</strong> ${noIncidencia}<br>`;
+                    }
+                    
+                    // Mostrar todos los campos adicionales que puedan existir
+                    Object.keys(campana).forEach(key => {
+                        const value = campana[key];
+                        if (value && !['Campaña', 'Cliente', 'Inicio', 'Fin', 'Nº Incidencia', 'Nº Recurso'].includes(key)) {
+                            tooltipContent += `<strong>${key}:</strong> ${value}<br>`;
+                        }
+                    });
+                    
+                    tooltipContent += `</div>`;
+                });
+            } else {
+                console.log(`⚠️ No hay campañas o el array está vacío`);
+                console.log(`⚠️ campanas:`, campanas);
+                console.log(`⚠️ totalCampanas:`, totalCampanas);
+                if (totalCampanas > 0 && (!campanas || campanas.length === 0)) {
+                    tooltipContent += `<p style="color: orange;"><em>⚠️ Se reportan ${totalCampanas} campaña(s) pero no se pudieron cargar los detalles</em></p>`;
+                } else {
+                    tooltipContent += `<p><em>No hay campañas asociadas</em></p>`;
+                }
+            }
+            
+            if (dataDetalles.incidencias && dataDetalles.incidencias.length > 0) {
+                tooltipContent += `<h5>🚨 Incidencias (${dataDetalles.incidencias.length}):</h5>`;
+                
+                // Agrupar incidencias por tipo
+                const incidenciasPorTipo = {};
+                dataDetalles.incidencias.forEach(incidencia => {
+                    const tipo = incidencia.Tipo || 'Sin tipo';
+                    if (!incidenciasPorTipo[tipo]) {
+                        incidenciasPorTipo[tipo] = [];
+                    }
+                    incidenciasPorTipo[tipo].push(incidencia);
+                });
+                
+                // Mostrar resumen por tipo
+                Object.keys(incidenciasPorTipo).forEach(tipo => {
+                    const incidenciasTipo = incidenciasPorTipo[tipo];
+                    const fechas = incidenciasTipo.map(i => i.Fecha).filter(f => f).sort();
+                    const desde = fechas.length > 0 ? formatearFecha(fechas[0]) : 'Sin fecha';
+                    const hasta = fechas.length > 0 ? formatearFecha(fechas[fechas.length - 1]) : 'Sin fecha';
+                    
+                    tooltipContent += `<div style="margin-bottom: 8px; padding: 5px; background-color: #fff3cd; border-left: 3px solid #ffc107;">`;
+                    tooltipContent += `<strong>Tipo:</strong> ${tipo}<br>`;
+                    tooltipContent += `<strong>Cantidad:</strong> ${incidenciasTipo.length}<br>`;
+                    tooltipContent += `<strong>Desde:</strong> ${desde}<br>`;
+                    tooltipContent += `<strong>Hasta:</strong> ${hasta}<br>`;
+                    tooltipContent += `</div>`;
+                });
+            } else {
+                tooltipContent += `<p><em>No hay incidencias registradas</em></p>`;
+            }
+            
+            tooltipContent += `</div>`;
+            
+            // Log final para debugging
+            console.log(`📋 Contenido final del tooltip (primeros 500 caracteres):`, tooltipContent.substring(0, 500));
+            console.log(`📋 ¿Contiene "Campañas"?`, tooltipContent.includes('Campañas'));
+            console.log(`📋 ¿Contiene "📋"?`, tooltipContent.includes('📋'));
+            console.log(`📋 Longitud total del tooltip:`, tooltipContent.length);
+            
+            marker.setPopupContent(tooltipContent);
+            
+            // Forzar actualización del popup si está abierto
+            if (marker.isPopupOpen()) {
+                marker.openPopup();
+            }
+            
+        } catch (error) {
+            console.error('Error cargando detalles:', error);
+            console.error('Recurso ID:', recurso.No_);
+            console.error('URL de petición:', `/api/recursos/${recurso.No_}/detalles`);
+            
+            const errorTooltip = `
+                <div style="max-width: 300px; padding: 10px;">
+                    <h4>🔧 ${recurso.Name || 'Sin nombre'}</h4>
+                    <p><strong>Nº:</strong> ${recurso.No_}</p>
+                    <p><strong>Estado:</strong> ${recurso.tiene_incidencia && recurso.total_incidencias > 0 ? '🚨 Con incidencias' : recurso.total_campanas > 0 ? '📋 Con campañas' : '✅ Sin problemas'}</p>
+                    <p><strong>Total campañas:</strong> ${recurso.total_campanas || 0}</p>
+                    <p><strong>Total incidencias:</strong> ${recurso.total_incidencias || 0}</p>
+                    <p style="color: red;"><em>Error cargando detalles</em></p>
+                    <p style="color: #666; font-size: 11px;">
+                        <strong>Debug:</strong><br>
+                        ID: ${recurso.No_}<br>
+                        Error: ${error.message || 'Error desconocido'}
+                    </p>
+                </div>
+            `;
+            marker.setPopupContent(errorTooltip);
+        }
+    });
+}
+
+// Función para plegar/desplegar las instrucciones
+function toggleInstructions() {
+    const content = document.getElementById('instructionsContent');
+    const toggle = document.querySelector('.instructions-toggle');
+    const icon = document.getElementById('instructionsIcon');
+    
+    if (content.style.display === 'none') {
+        content.style.display = 'block';
+        toggle.classList.add('expanded');
+    } else {
+        content.style.display = 'none';
+        toggle.classList.remove('expanded');
+    }
+}
+
+// Función para seleccionar/deseleccionar un recurso
+function toggleRecursoSeleccionado(noRecurso) {
+    if (recursosSeleccionados.has(noRecurso)) {
+        recursosSeleccionados.delete(noRecurso);
+    } else {
+        recursosSeleccionados.add(noRecurso);
+    }
+    
+    // Actualizar checkboxes en todos los popups
+    const checkboxSimple = document.getElementById(`select-${noRecurso}`);
+    const checkboxDetail = document.getElementById(`select-detail-${noRecurso}`);
+    const checkboxSearch = document.getElementById(`select-search-${noRecurso}`);
+    const checkboxZone = document.getElementById(`select-zone-${noRecurso}`);
+    
+    const isSelected = recursosSeleccionados.has(noRecurso);
+    
+    if (checkboxSimple) {
+        checkboxSimple.checked = isSelected;
+        const labelSimple = checkboxSimple.nextElementSibling;
+        if (labelSimple) labelSimple.textContent = isSelected ? 'Deseleccionar' : 'Seleccionar para exportar';
+    }
+    if (checkboxDetail) {
+        checkboxDetail.checked = isSelected;
+        const labelDetail = checkboxDetail.nextElementSibling;
+        if (labelDetail) labelDetail.textContent = isSelected ? 'Deseleccionar' : 'Seleccionar para exportar';
+    }
+    if (checkboxSearch) {
+        checkboxSearch.checked = isSelected;
+        const labelSearch = checkboxSearch.nextElementSibling;
+        if (labelSearch) labelSearch.textContent = isSelected ? 'Deseleccionar' : 'Seleccionar para exportar';
+    }
+    if (checkboxZone) {
+        checkboxZone.checked = isSelected;
+        const labelZone = checkboxZone.nextElementSibling;
+        if (labelZone) labelZone.textContent = isSelected ? 'Deseleccionar' : 'Seleccionar para exportar';
+    }
+    
+    // Actualizar contador si existe
+    updateContadorSeleccionados();
+}
+
+// Función para actualizar el contador de recursos seleccionados
+function updateContadorSeleccionados() {
+    const contador = document.getElementById('contadorSeleccionados');
+    if (contador) {
+        contador.textContent = `(${recursosSeleccionados.size} seleccionados)`;
+    }
+}
+
+// Función para exportar recursos seleccionados a Excel
+async function exportarRecursosExcel() {
+    if (recursosSeleccionados.size === 0) {
+        showNotification('No hay recursos seleccionados para exportar', 'warning');
+        return;
+    }
+    
+    try {
+        const recursosArray = Array.from(recursosSeleccionados);
+        const response = await fetch('/api/exportar-excel', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ recursos: recursosArray })
+        });
+        
+        if (!response.ok) {
+            throw new Error('Error al exportar a Excel');
+        }
+        
+        // Descargar el archivo
+        const blob = await response.blob();
+        const url = window.URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `recursos_seleccionados_${new Date().toISOString().split('T')[0]}.xlsx`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        window.URL.revokeObjectURL(url);
+        
+        showNotification(`Excel exportado con ${recursosSeleccionados.size} recursos`, 'success');
+    } catch (error) {
+        console.error('Error exportando a Excel:', error);
+        showNotification('Error al exportar a Excel: ' + error.message, 'error');
+    }
+}
+
+
+// Función auxiliar para añadir fechas y tipos de recurso a las URLs de las APIs
+function addFechasToUrl(url) {
+    const fechaDesde = document.getElementById('fechaDesde').value;
+    const fechaHasta = document.getElementById('fechaHasta').value;
+    
+    const params = new URLSearchParams();
+    
+    // Añadir parámetros existentes de la URL
+    const urlObj = new URL(url, window.location.origin);
+    urlObj.searchParams.forEach((value, key) => {
+        params.append(key, value);
+    });
+    
+    // Añadir fechas si están seleccionadas
+    if (fechaDesde) params.append('fecha_desde', fechaDesde);
+    if (fechaHasta) params.append('fecha_hasta', fechaHasta);
+    
+    // Añadir tipos de recurso y empresas seleccionados (solo para APIs de recursos, no mobiliario)
+    if (url.includes('/api/recursos') && !url.includes('/api/mobiliario')) {
+        const tiposRecursoSelect = document.getElementById('tiposRecurso');
+        if (tiposRecursoSelect) {
+            const selectedTipos = Array.from(tiposRecursoSelect.selectedOptions)
+                .map(option => option.value)
+                .filter(value => value); // Filtrar valores vacíos
+            
+            if (selectedTipos.length > 0) {
+                params.append('tipos_recurso', selectedTipos.join(','));
+            }
+        }
+        
+        const empresasSelect = document.getElementById('empresas');
+        if (empresasSelect) {
+            const selectedEmpresas = Array.from(empresasSelect.selectedOptions)
+                .map(option => option.value)
+                .filter(value => value); // Filtrar valores vacíos
+            
+            if (selectedEmpresas.length > 0) {
+                params.append('empresas', selectedEmpresas.join(','));
+            }
+        }
+        
+        const familiasSelect = document.getElementById('familias');
+        if (familiasSelect) {
+            const selectedFamilias = Array.from(familiasSelect.selectedOptions)
+                .map(option => option.value)
+                .filter(value => value); // Filtrar valores vacíos
+            
+            if (selectedFamilias.length > 0) {
+                params.append('familias', selectedFamilias.join(','));
+            }
+        }
+    }
+    
+    // Construir nueva URL
+    const baseUrl = url.split('?')[0];
+    const queryString = params.toString();
+    
+    return queryString ? `${baseUrl}?${queryString}` : baseUrl;
+}
+
+// Cargar empresas disponibles
+async function loadEmpresas() {
+    try {
+        const empresasSelect = document.getElementById('empresas');
+        if (!empresasSelect) return;
+        
+        // Limpiar opciones existentes
+        empresasSelect.innerHTML = '<option value="">Cargando empresas...</option>';
+        
+        // Construir URL con fechas (si no hay fechas, el backend usará la fecha de hoy)
+        const fechaDesde = document.getElementById('fechaDesde')?.value || '';
+        const fechaHasta = document.getElementById('fechaHasta')?.value || '';
+        
+        let url = '/api/empresas';
+        const params = new URLSearchParams();
+        
+        if (fechaDesde) params.append('fecha_desde', fechaDesde);
+        if (fechaHasta) params.append('fecha_hasta', fechaHasta);
+        
+        if (params.toString()) {
+            url += '?' + params.toString();
+        }
+        
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+            throw new Error(`Error HTTP: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        if (data.error) {
+            throw new Error(data.error);
+        }
+        
+        // Limpiar y añadir opciones
+        empresasSelect.innerHTML = '';
+        
+        if (data.empresas && data.empresas.length > 0) {
+            data.empresas.forEach(empresa => {
+                const option = document.createElement('option');
+                option.value = empresa;
+                option.textContent = empresa;
+                empresasSelect.appendChild(option);
+            });
+        } else {
+            const option = document.createElement('option');
+            option.value = '';
+            option.textContent = 'No hay empresas disponibles';
+            empresasSelect.appendChild(option);
+        }
+        
+        console.log(`✅ Cargadas ${data.total || 0} empresas`);
+        
+    } catch (error) {
+        console.error('Error al cargar empresas:', error);
+        const empresasSelect = document.getElementById('empresas');
+        if (empresasSelect) {
+            empresasSelect.innerHTML = '<option value="">Error al cargar empresas</option>';
+        }
+    }
+}
+
+// Cargar familias disponibles
+async function loadFamilias() {
+    try {
+        const familiasSelect = document.getElementById('familias');
+        if (!familiasSelect) return;
+        
+        // Limpiar opciones existentes
+        familiasSelect.innerHTML = '<option value="">Cargando familias...</option>';
+        
+        // Construir URL con fechas (si no hay fechas, el backend usará la fecha de hoy)
+        const fechaDesde = document.getElementById('fechaDesde')?.value || '';
+        const fechaHasta = document.getElementById('fechaHasta')?.value || '';
+        
+        let url = '/api/familias';
+        const params = new URLSearchParams();
+        
+        if (fechaDesde) params.append('fecha_desde', fechaDesde);
+        if (fechaHasta) params.append('fecha_hasta', fechaHasta);
+        
+        if (params.toString()) {
+            url += '?' + params.toString();
+        }
+        
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+            throw new Error(`Error HTTP: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        if (data.error) {
+            throw new Error(data.error);
+        }
+        
+        // Limpiar y añadir opciones
+        familiasSelect.innerHTML = '';
+        
+        if (data.familias && data.familias.length > 0) {
+            data.familias.forEach(familia => {
+                const option = document.createElement('option');
+                option.value = familia;
+                option.textContent = familia;
+                familiasSelect.appendChild(option);
+            });
+        } else {
+            const option = document.createElement('option');
+            option.value = '';
+            option.textContent = 'No hay familias disponibles';
+            familiasSelect.appendChild(option);
+        }
+        
+        console.log(`✅ Cargadas ${data.total || 0} familias`);
+        
+    } catch (error) {
+        console.error('Error al cargar familias:', error);
+        const familiasSelect = document.getElementById('familias');
+        if (familiasSelect) {
+            familiasSelect.innerHTML = '<option value="">Error al cargar familias</option>';
+        }
+    }
+}
+
+// Cargar tipos de recurso disponibles
+async function loadTiposRecurso() {
+    try {
+        const tiposSelect = document.getElementById('tiposRecurso');
+        if (!tiposSelect) return;
+        
+        // Limpiar opciones existentes
+        tiposSelect.innerHTML = '<option value="">Cargando tipos...</option>';
+        
+        // Construir URL con fechas (si no hay fechas, el backend usará la fecha de hoy)
+        const fechaDesde = document.getElementById('fechaDesde')?.value || '';
+        const fechaHasta = document.getElementById('fechaHasta')?.value || '';
+        
+        let url = '/api/tipos-recurso';
+        const params = new URLSearchParams();
+        
+        if (fechaDesde) params.append('fecha_desde', fechaDesde);
+        if (fechaHasta) params.append('fecha_hasta', fechaHasta);
+        
+        if (params.toString()) {
+            url += '?' + params.toString();
+        }
+        
+        const response = await fetch(url);
+        
+        if (!response.ok) {
+            throw new Error(`Error HTTP: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        
+        if (data.error) {
+            throw new Error(data.error);
+        }
+        
+        // Limpiar y añadir opciones
+        tiposSelect.innerHTML = '';
+        
+        if (data.tipos_recurso && data.tipos_recurso.length > 0) {
+            data.tipos_recurso.forEach(tipo => {
+                const option = document.createElement('option');
+                option.value = tipo;
+                option.textContent = tipo;
+                tiposSelect.appendChild(option);
+            });
+        } else {
+            const option = document.createElement('option');
+            option.value = '';
+            option.textContent = 'No hay tipos disponibles';
+            tiposSelect.appendChild(option);
+        }
+        
+        console.log(`✅ Cargados ${data.total || 0} tipos de recurso`);
+        
+    } catch (error) {
+        console.error('Error al cargar tipos de recurso:', error);
+        const tiposSelect = document.getElementById('tiposRecurso');
+        if (tiposSelect) {
+            tiposSelect.innerHTML = '<option value="">Error al cargar tipos</option>';
+        }
+    }
+}
 
 // Función auxiliar para formatear fechas
 function formatearFecha(fecha) {
@@ -48,15 +710,18 @@ function formatearFecha(fecha) {
 
 // Configuración inicial del mapa
 function initMap() {
+    console.log('🗺️ Inicializando mapa...');
+    
     // Crear el mapa centrado en España (ajustar según tu ubicación)
     map = L.map('map').setView([40.4168, -3.7038], 6);
+    console.log('✅ Mapa creado:', map);
     
     // Agregar capa de tiles de OpenStreetMap
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '© OpenStreetMap contributors'
     }).addTo(map);
     
-    console.log('Mapa inicializado correctamente');
+    console.log('✅ Mapa inicializado correctamente');
 }
 
 // Cargar todos los datos geoespaciales desde la API
@@ -72,10 +737,27 @@ async function loadAllGeoData() {
         // Limpiar datos anteriores
         clearMap();
         
+        // Obtener fechas si están seleccionadas
+        const fechaDesde = document.getElementById('fechaDesde').value;
+        const fechaHasta = document.getElementById('fechaHasta').value;
+        
+        // Construir URLs con parámetros de fecha si existen
+        let recursosUrl = '/api/recursos';
+        let mobiliarioUrl = '/api/mobiliario';
+        const params = new URLSearchParams();
+        
+        if (fechaDesde) params.append('fecha_desde', fechaDesde);
+        if (fechaHasta) params.append('fecha_hasta', fechaHasta);
+        
+        if (params.toString()) {
+            recursosUrl += '?' + params.toString();
+            mobiliarioUrl += '?' + params.toString();
+        }
+        
         // Cargar recursos y mobiliario en paralelo
         const [recursosResponse, mobiliarioResponse] = await Promise.all([
-            fetch('/api/recursos'),
-            fetch('/api/mobiliario')
+            fetch(recursosUrl),
+            fetch(mobiliarioUrl)
         ]);
         
         if (!recursosResponse.ok || !mobiliarioResponse.ok) {
@@ -143,136 +825,9 @@ async function loadRecursosData(data) {
                     fillOpacity: 0.8
                 });
             
-            // Crear tooltip simple inicial (solo información básica)
-            const simpleTooltip = `
-                <div style="max-width: 350px; padding: 5px;">
-                    <h4>🔧 Recurso: ${recurso.Name || 'Sin nombre'}</h4>
-                    <p><strong>Nº:</strong> ${recurso.No_}</p>
-                    <p><strong>Estado:</strong> ${recurso.tiene_incidencia && recurso.total_incidencias > 0 ? '🚨 Con incidencias' : recurso.total_campanas > 0 ? '📋 Con campañas' : '✅ Sin problemas'}</p>
-                    <p><strong>Total campañas:</strong> ${recurso.total_campanas || 0}</p>
-                    <p><strong>Total incidencias:</strong> ${recurso.total_incidencias || 0}</p>
-                    <p style="text-align: center; margin-top: 5px; font-size: 12px; color: #666;">
-                        <em>Haz clic para ver detalles completos</em>
-                    </p>
-                </div>
-            `;
+            // Usar función común para crear el popup
+            crearPopupRecurso(marker, recurso);
             
-            // Usar tooltip simple inicialmente
-            marker.bindPopup(simpleTooltip);
-            
-            // Crear tooltip completo solo cuando se necesite
-            marker.on('click', async function() {
-                // Mostrar tooltip de carga
-                const loadingTooltip = `
-                    <div style="max-width: 300px; padding: 10px; text-align: center;">
-                        <h4>🔧 ${recurso.Name || 'Sin nombre'}</h4>
-                        <p>Cargando detalles...</p>
-                        <div style="border: 2px solid #f3f3f3; border-top: 2px solid #3498db; border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; margin: 10px auto;"></div>
-                    </div>
-                `;
-                marker.setPopupContent(loadingTooltip);
-                
-                try {
-                    // Cargar detalles desde el API
-                    console.log(`🔍 Cargando detalles para recurso: ${recurso.No_}`);
-                    const url = `/api/recursos/${recurso.No_}/detalles`;
-                    console.log(`📡 URL de petición: ${url}`);
-                    
-                    const response = await fetch(url);
-                    console.log(`📡 Respuesta recibida:`, response.status, response.statusText);
-                    
-                    const data = await response.json();
-                    console.log(`📊 Datos de detalles recibidos:`, data);
-                    
-                    let tooltipContent = `
-                        <div style="max-width: 400px; max-height: 500px; overflow-y: auto; padding: 5px;">
-                            <h4>🔧 Recurso: ${recurso.Name || 'Sin nombre'}</h4>
-                            <p><strong>Nº:</strong> ${recurso.No_}</p>
-                            <p><strong>Estado:</strong> ${data.total_incidencias > 0 ? '🚨 Con incidencias' : data.total_campanas > 0 ? '📋 Con campañas' : '✅ Sin problemas'}</p>
-                            <p><strong>Total campañas:</strong> ${data.total_campanas || 0}</p>
-                            <p><strong>Total incidencias:</strong> ${data.total_incidencias || 0}</p>
-                    `;
-                    
-                    if (data.campanas && data.campanas.length > 0) {
-                        tooltipContent += `<h5>📋 Campañas (${data.campanas.length}):</h5>`;
-                        data.campanas.forEach((campana, index) => {
-                            tooltipContent += `<div style="margin-bottom: 8px; padding: 5px; background-color: #f8f9fa; border-left: 3px solid #007bff;">`;
-                            tooltipContent += `<strong>Campaña ${index + 1}:</strong><br>`;
-                            if (campana.Campaña) {
-                                tooltipContent += `<strong>Campaña:</strong> ${campana.Campaña}<br>`;
-                            }
-                            if (campana.Inicio) {
-                                tooltipContent += `<strong>Inicio:</strong> ${formatearFecha(campana.Inicio)}<br>`;
-                            }
-                            if (campana.Fin) {
-                                tooltipContent += `<strong>Fin:</strong> ${formatearFecha(campana.Fin)}<br>`;
-                            }
-                            if (campana['Nº Incidencia']) {
-                                tooltipContent += `<strong>Nº Incidencia:</strong> ${campana['Nº Incidencia']}<br>`;
-                            }
-                            tooltipContent += `</div>`;
-                        });
-                    } else {
-                        tooltipContent += `<p><em>No hay campañas asociadas</em></p>`;
-                    }
-                    
-                    if (data.incidencias && data.incidencias.length > 0) {
-                        tooltipContent += `<h5>🚨 Incidencias (${data.incidencias.length}):</h5>`;
-                        
-                        // Agrupar incidencias por tipo
-                        const incidenciasPorTipo = {};
-                        data.incidencias.forEach(incidencia => {
-                            const tipo = incidencia.Tipo || 'Sin tipo';
-                            if (!incidenciasPorTipo[tipo]) {
-                                incidenciasPorTipo[tipo] = [];
-                            }
-                            incidenciasPorTipo[tipo].push(incidencia);
-                        });
-                        
-                        // Mostrar resumen por tipo
-                        Object.keys(incidenciasPorTipo).forEach(tipo => {
-                            const incidenciasTipo = incidenciasPorTipo[tipo];
-                            const fechas = incidenciasTipo.map(i => i.Fecha).filter(f => f).sort();
-                            const desde = fechas.length > 0 ? formatearFecha(fechas[0]) : 'Sin fecha';
-                            const hasta = fechas.length > 0 ? formatearFecha(fechas[fechas.length - 1]) : 'Sin fecha';
-                            
-                            tooltipContent += `<div style="margin-bottom: 8px; padding: 5px; background-color: #fff3cd; border-left: 3px solid #ffc107;">`;
-                            tooltipContent += `<strong>Tipo:</strong> ${tipo}<br>`;
-                            tooltipContent += `<strong>Cantidad:</strong> ${incidenciasTipo.length}<br>`;
-                            tooltipContent += `<strong>Desde:</strong> ${desde}<br>`;
-                            tooltipContent += `<strong>Hasta:</strong> ${hasta}<br>`;
-                            tooltipContent += `</div>`;
-                        });
-                    } else {
-                        tooltipContent += `<p><em>No hay incidencias registradas</em></p>`;
-                    }
-                    
-                    tooltipContent += `</div>`;
-                    marker.setPopupContent(tooltipContent);
-                    
-                } catch (error) {
-                    console.error('Error cargando detalles:', error);
-                    console.error('Recurso ID:', recurso.No_);
-                    console.error('URL de petición:', `/api/recursos/${recurso.No_}/detalles`);
-                    
-                    const errorTooltip = `
-                        <div style="max-width: 300px; padding: 10px;">
-                            <h4>🔧 ${recurso.Name || 'Sin nombre'}</h4>
-                            <p><strong>Nº:</strong> ${recurso.No_}</p>
-                            <p><strong>Estado:</strong> ${recurso.tiene_incidencia && recurso.total_incidencias > 0 ? '🚨 Con incidencias' : recurso.total_campanas > 0 ? '📋 Con campañas' : '✅ Sin problemas'}</p>
-                            <p><strong>Total campañas:</strong> ${recurso.total_campanas || 0}</p>
-                            <p><strong>Total incidencias:</strong> ${recurso.total_incidencias || 0}</p>
-                            <p style="color: red;"><em>Error cargando detalles</em></p>
-                            <p style="color: #666; font-size: 11px;">
-                                <strong>Debug:</strong><br>
-                                ID: ${recurso.No_}<br>
-                                Error: ${error.message || 'Error desconocido'}
-                            </p>
-                        </div>
-                    `;
-                    marker.setPopupContent(errorTooltip);
-                }
-            });
             recursosLayer.addLayer(marker);
         }
         });
@@ -296,6 +851,9 @@ async function loadRecursosData(data) {
     
     console.log('Recursos cargados completamente');
     recursosLayer.addTo(map);
+    
+    // Actualizar contador de seleccionados
+    updateContadorSeleccionados();
 }
 
 // Función auxiliar para cargar datos de mobiliario
@@ -501,12 +1059,12 @@ async function loadMobiliarioData(data) {
                         tooltipContent += `<p><strong>Zona Limpieza:</strong> ${mobiliario['Zona Limpieza']}</p>`;
                     }
                     
-                    if (data.incidencias && data.incidencias.length > 0) {
-                        tooltipContent += `<h5>🚨 Incidencias (${data.incidencias.length}):</h5>`;
+                    if (dataDetalles.incidencias && dataDetalles.incidencias.length > 0) {
+                        tooltipContent += `<h5>🚨 Incidencias (${dataDetalles.incidencias.length}):</h5>`;
                         
                         // Agrupar incidencias por tipo
                         const incidenciasPorTipo = {};
-                        data.incidencias.forEach(incidencia => {
+                        dataDetalles.incidencias.forEach(incidencia => {
                             const tipo = incidencia.Tipo || 'Sin tipo';
                             if (!incidenciasPorTipo[tipo]) {
                                 incidenciasPorTipo[tipo] = [];
@@ -592,7 +1150,22 @@ async function loadRecursos() {
         statusDiv.className = 'status';
         loadButton.disabled = true;
         
-        const response = await fetch('/api/recursos');
+        // Obtener fechas si están seleccionadas
+        const fechaDesde = document.getElementById('fechaDesde').value;
+        const fechaHasta = document.getElementById('fechaHasta').value;
+        
+        // Construir URL con parámetros de fecha si existen
+        let url = '/api/recursos';
+        const params = new URLSearchParams();
+        
+        if (fechaDesde) params.append('fecha_desde', fechaDesde);
+        if (fechaHasta) params.append('fecha_hasta', fechaHasta);
+        
+        if (params.toString()) {
+            url += '?' + params.toString();
+        }
+        
+        const response = await fetch(url);
         
         if (!response.ok) {
             throw new Error(`Error HTTP: ${response.status}`);
@@ -658,7 +1231,22 @@ async function loadMobiliario() {
         statusDiv.className = 'status';
         loadButton.disabled = true;
         
-        const response = await fetch('/api/mobiliario');
+        // Obtener fechas si están seleccionadas
+        const fechaDesde = document.getElementById('fechaDesde').value;
+        const fechaHasta = document.getElementById('fechaHasta').value;
+        
+        // Construir URL con parámetros de fecha si existen
+        let url = '/api/mobiliario';
+        const params = new URLSearchParams();
+        
+        if (fechaDesde) params.append('fecha_desde', fechaDesde);
+        if (fechaHasta) params.append('fecha_hasta', fechaHasta);
+        
+        if (params.toString()) {
+            url += '?' + params.toString();
+        }
+        
+        const response = await fetch(url);
         
         if (!response.ok) {
             throw new Error(`Error HTTP: ${response.status}`);
@@ -759,6 +1347,11 @@ function displayGeoData(geoJsonData) {
 
 // Limpiar el mapa
 function clearMap() {
+    // Limpiar selección de recursos (pero no los datos del mapa)
+    recursosSeleccionados.clear();
+    recursosDataMap.clear();
+    updateContadorSeleccionados();
+    
     // Remover capas específicas
     if (recursosLayer) {
         try {
@@ -814,6 +1407,41 @@ async function checkHealth() {
 
 // Event listeners
 document.addEventListener('DOMContentLoaded', function() {
+    // Establecer fechas por defecto a hoy
+    const fechaDesde = document.getElementById('fechaDesde');
+    const fechaHasta = document.getElementById('fechaHasta');
+    const hoy = new Date().toISOString().split('T')[0];
+    
+    if (fechaDesde) {
+        fechaDesde.value = hoy;
+    }
+    if (fechaHasta) {
+        fechaHasta.value = hoy;
+    }
+    
+    // Inicializar contador de seleccionados
+    updateContadorSeleccionados();
+    
+    // Cargar tipos de recurso y empresas al iniciar
+    loadTiposRecurso();
+    loadEmpresas();
+    loadFamilias();
+    
+    // Recargar tipos, empresas y familias cuando cambien las fechas
+    if (fechaDesde) {
+        fechaDesde.addEventListener('change', () => {
+            loadTiposRecurso();
+            loadEmpresas();
+            loadFamilias();
+        });
+    }
+    if (fechaHasta) {
+        fechaHasta.addEventListener('change', () => {
+            loadTiposRecurso();
+            loadEmpresas();
+            loadFamilias();
+        });
+    }
     // Inicializar el mapa cuando se carga la página
     initMap();
     
@@ -841,6 +1469,9 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('loadMobiliario').addEventListener('click', loadMobiliario);
     document.getElementById('clearMap').addEventListener('click', clearMap);
     
+    // Event listener para exportar Excel
+    document.getElementById('exportarExcel').addEventListener('click', exportarRecursosExcel);
+    
     // Event listeners para búsqueda
     document.getElementById('searchByPlace').addEventListener('click', searchByPlace);
     document.getElementById('searchByCoordinates').addEventListener('click', searchByCoordinates);
@@ -854,7 +1485,10 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('editZone').addEventListener('click', editZone);
     document.getElementById('deleteZone').addEventListener('click', deleteZone);
     document.getElementById('zoneSelect').addEventListener('change', onZoneSelect);
-    document.getElementById('startDrawing').addEventListener('click', startZoneDrawing);
+    document.getElementById('startDrawing').addEventListener('click', function() {
+        console.log('🖱️ Click en botón Iniciar Dibujo detectado');
+        startZoneDrawing();
+    });
     document.getElementById('finishDrawing').addEventListener('click', finishZoneDrawing);
     document.getElementById('clearDrawing').addEventListener('click', clearZoneDrawing);
     document.getElementById('saveZone').addEventListener('click', saveZone);
@@ -874,76 +1508,121 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // Funciones de utilidad
 function showNotification(message, type = 'info') {
+    console.log('🔔 Mostrando notificación...');
+    console.log('📍 Mensaje:', message);
+    console.log('📍 Tipo:', type);
+    
     const statusDiv = document.getElementById('status');
+    if (!statusDiv) {
+        console.error('❌ Elemento de estado no encontrado');
+        return;
+    }
+    
     statusDiv.textContent = message;
     statusDiv.className = `status ${type}`;
+    console.log('✅ Notificación mostrada');
     
     // Auto-ocultar después de 5 segundos
     setTimeout(() => {
         statusDiv.textContent = '';
         statusDiv.className = 'status';
+        console.log('✅ Notificación ocultada');
     }, 5000);
+    
+    console.log('✅ Notificación mostrada correctamente');
 }
 
 // ==================== FUNCIONES DE BÚSQUEDA ====================
 
 // Cargar tipos de lugares disponibles
 async function loadPlaceTypes() {
+    console.log('📂 Cargando tipos de lugares...');
+    
     try {
         const response = await fetch('/api/tipos-lugares');
         const data = await response.json();
+        
+        console.log('✅ Respuesta recibida:', data);
         
         if (data.error) {
             throw new Error(data.error);
         }
         
         const select = document.getElementById('placeType');
+        if (!select) {
+            console.error('❌ Selector de tipos de lugares no encontrado');
+            return;
+        }
+        
         select.innerHTML = '<option value="">Seleccionar tipo...</option>';
+        console.log('✅ Opciones limpiadas');
         
         Object.entries(data.tipos_lugares).forEach(([key, value]) => {
             const option = document.createElement('option');
             option.value = key;
             option.textContent = value;
             select.appendChild(option);
+            console.log(`✅ Tipo agregado: ${key} - ${value}`);
         });
         
+        console.log('✅ Tipos de lugares cargados correctamente');
         console.log('Tipos de lugares cargados:', data.total_tipos);
     } catch (error) {
-        console.error('Error cargando tipos de lugares:', error);
+        console.error('❌ Error cargando tipos de lugares:', error);
         showNotification('Error cargando tipos de lugares', 'error');
     }
 }
 
 // Cambiar tipo de búsqueda
 function switchSearchType() {
+    console.log('🔄 Cambiando tipo de búsqueda...');
+    
     const searchType = document.querySelector('input[name="searchType"]:checked').value;
+    console.log('📍 Tipo de búsqueda seleccionado:', searchType);
     
     // Ocultar todos los paneles
     document.querySelectorAll('.search-panel').forEach(panel => {
         panel.classList.remove('active');
     });
+    console.log('✅ Paneles ocultados');
     
     // Mostrar el panel correspondiente
     const panelId = searchType + 'Search';
-    document.getElementById(panelId).classList.add('active');
+    const panel = document.getElementById(panelId);
+    if (panel) {
+        panel.classList.add('active');
+        console.log(`✅ Panel ${panelId} mostrado`);
+    } else {
+        console.error(`❌ Panel ${panelId} no encontrado`);
+    }
     
     currentSearchType = searchType;
+    console.log('✅ Tipo de búsqueda cambiado correctamente');
 }
 
 // Buscar recursos cerca de un tipo de lugar
 async function searchByPlace() {
+    console.log('🔍 Buscando recursos cerca de un tipo de lugar...');
+    
     const placeType = document.getElementById('placeType').value;
     const radius = parseFloat(document.getElementById('placeRadius').value);
     
+    console.log('📍 Tipo de lugar:', placeType);
+    console.log('📍 Radio:', radius);
+    
     if (!placeType) {
+        console.log('❌ No hay tipo de lugar seleccionado');
         showNotification('Por favor selecciona un tipo de lugar', 'error');
         return;
     }
     
     if (!radius || radius <= 0 || radius > 50) {
+        console.log('❌ Radio inválido');
         showNotification('Por favor introduce un radio válido entre 0.1 y 50 km', 'error');
         return;
     }
+    
+    console.log('✅ Validaciones pasadas, iniciando búsqueda...');
     
     // Verificar si hay ubicación guardada
     const savedLocation = getSavedLocation();
@@ -962,7 +1641,8 @@ async function searchByPlace() {
             try {
                 showNotification(`Buscando ${placeType} en un radio de ${radius} km usando ubicación guardada...`, 'info');
                 
-                const response = await fetch(`/api/recursos-cerca-lugares?lat=${savedLocation.lat}&lon=${savedLocation.lon}&tipo_lugar=${placeType}&radio=${radius}`);
+                const url = addFechasToUrl(`/api/recursos-cerca-lugares?lat=${savedLocation.lat}&lon=${savedLocation.lon}&tipo_lugar=${placeType}&radio=${radius}`);
+                const response = await fetch(url);
                 const data = await response.json();
                 
                 if (data.error) {
@@ -1003,7 +1683,8 @@ async function searchByPlace() {
         try {
             showNotification(`Buscando ${placeType} en un radio de ${radius} km...`, 'info');
             
-            const response = await fetch(`/api/recursos-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=${placeType}&radio=${radius}`);
+            const url = addFechasToUrl(`/api/recursos-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=${placeType}&radio=${radius}`);
+            const response = await fetch(url);
             const data = await response.json();
             
             if (data.error) {
@@ -1011,9 +1692,10 @@ async function searchByPlace() {
             }
             
             displaySearchResults(data, 'place', { lat, lon, radius });
+            console.log('✅ Resultados mostrados');
             
         } catch (error) {
-            console.error('Error en búsqueda por lugar:', error);
+            console.error('❌ Error en búsqueda por lugar:', error);
             showNotification(`Error: ${error.message}`, 'error');
         }
     };
@@ -1021,28 +1703,41 @@ async function searchByPlace() {
     // Guardar referencia al handler y agregar listener temporal
     currentClickHandler = clickHandler;
     map.on('click', clickHandler);
+    console.log('✅ Listener de click configurado');
+    
+    console.log('✅ Búsqueda por lugar configurada correctamente');
 }
 
 // Buscar recursos cerca de coordenadas específicas
 async function searchByCoordinates() {
+    console.log('🔍 Buscando recursos cerca de coordenadas específicas...');
+    
     const lat = parseFloat(document.getElementById('coordLat').value);
     const lon = parseFloat(document.getElementById('coordLon').value);
     const radius = parseFloat(document.getElementById('coordRadius').value);
     
+    console.log('📍 Coordenadas:', lat, lon);
+    console.log('📍 Radio:', radius);
+    
     if (isNaN(lat) || isNaN(lon)) {
+        console.log('❌ Coordenadas inválidas');
         showNotification('Por favor introduce coordenadas válidas', 'error');
         return;
     }
     
     if (!radius || radius <= 0 || radius > 50) {
+        console.log('❌ Radio inválido');
         showNotification('Por favor introduce un radio válido entre 0.1 y 50 km', 'error');
         return;
     }
     
+    console.log('✅ Validaciones pasadas, iniciando búsqueda...');
+    
     try {
         showNotification(`Buscando recursos en un radio de ${radius} km...`, 'info');
         
-        const response = await fetch(`/api/recursos-cerca-coordenadas?lat=${lat}&lon=${lon}&radio=${radius}`);
+        const url = addFechasToUrl(`/api/recursos-cerca-coordenadas?lat=${lat}&lon=${lon}&radio=${radius}`);
+        const response = await fetch(url);
         const data = await response.json();
         
         if (data.error) {
@@ -1050,32 +1745,45 @@ async function searchByCoordinates() {
         }
         
         displaySearchResults(data, 'coordinates', { lat, lon, radius });
+        console.log('✅ Resultados mostrados');
         
     } catch (error) {
-        console.error('Error en búsqueda por coordenadas:', error);
+        console.error('❌ Error en búsqueda por coordenadas:', error);
         showNotification(`Error: ${error.message}`, 'error');
     }
+    
+    console.log('✅ Búsqueda por coordenadas completada');
 }
 
 // Buscar recursos cerca de una dirección
 async function searchByAddress() {
+    console.log('🔍 Buscando recursos cerca de una dirección...');
+    
     const address = document.getElementById('addressInput').value.trim();
     const radius = parseFloat(document.getElementById('addressRadius').value);
     
+    console.log('📍 Dirección:', address);
+    console.log('📍 Radio:', radius);
+    
     if (!address) {
+        console.log('❌ No hay dirección introducida');
         showNotification('Por favor introduce una dirección', 'error');
         return;
     }
     
     if (!radius || radius <= 0 || radius > 50) {
+        console.log('❌ Radio inválido');
         showNotification('Por favor introduce un radio válido entre 0.1 y 50 km', 'error');
         return;
     }
     
+    console.log('✅ Validaciones pasadas, iniciando búsqueda...');
+    
     try {
         showNotification(`Geocodificando dirección y buscando recursos en un radio de ${radius} km...`, 'info');
         
-        const response = await fetch(`/api/recursos-cerca-direccion?direccion=${encodeURIComponent(address)}&radio=${radius}`);
+        const url = addFechasToUrl(`/api/recursos-cerca-direccion?direccion=${encodeURIComponent(address)}&radio=${radius}`);
+        const response = await fetch(url);
         const data = await response.json();
         
         if (data.error) {
@@ -1088,26 +1796,35 @@ async function searchByAddress() {
             radius,
             address: data.direccion_buscada
         });
+        console.log('✅ Resultados mostrados');
         
     } catch (error) {
-        console.error('Error en búsqueda por dirección:', error);
+        console.error('❌ Error en búsqueda por dirección:', error);
         showNotification(`Error: ${error.message}`, 'error');
     }
+    
+    console.log('✅ Búsqueda por dirección completada');
 }
 
 // Usar ubicación actual
 function useCurrentLocation() {
+    console.log('📍 Obteniendo ubicación actual...');
+    
     if (!navigator.geolocation) {
+        console.log('❌ Geolocalización no soportada');
         showNotification('Geolocalización no soportada por este navegador', 'error');
         return;
     }
     
     showNotification('Obteniendo ubicación actual...', 'info');
+    console.log('✅ Solicitud de ubicación enviada');
     
     navigator.geolocation.getCurrentPosition(
         (position) => {
             const lat = position.coords.latitude;
             const lon = position.coords.longitude;
+            
+            console.log('✅ Ubicación obtenida:', lat, lon);
             
             // Guardar la ubicación en localStorage
             const locationData = {
@@ -1125,43 +1842,68 @@ function useCurrentLocation() {
             console.log('✅ Datos parseados de verificación:', JSON.parse(saved));
             
             // Actualizar los campos de coordenadas
-            document.getElementById('coordLat').value = lat.toFixed(6);
+            const latInput = document.getElementById('coordLat');
+            const lonInput = document.getElementById('coordLon');
+            
+            if (latInput) latInput.value = lat.toFixed(6);
+            if (lonInput) lonInput.value = lon.toFixed(6);
+            
+            console.log('✅ Campos de coordenadas actualizados');
             document.getElementById('coordLon').value = lon.toFixed(6);
             
             // Centrar el mapa en la ubicación actual
             map.setView([lat, lon], 15);
+            console.log('✅ Mapa centrado en la ubicación actual');
             
             // Actualizar el botón para mostrar que ahora hay una ubicación guardada
             updateLocationButton();
+            console.log('✅ Botón de ubicación actualizado');
             
             // Actualizar también los botones de ubicación guardada
             updateSavedLocationButtons();
+            console.log('✅ Botones de ubicación guardada actualizados');
             
             showNotification('Ubicación actual obtenida y guardada', 'success');
+            console.log('✅ Ubicación actual obtenida y guardada correctamente');
         },
         (error) => {
-            console.error('Error obteniendo ubicación:', error);
+            console.error('❌ Error obteniendo ubicación:', error);
             showNotification('Error obteniendo ubicación actual', 'error');
+            console.log('❌ Error en geolocalización');
         }
     );
 }
 
 // Usar ubicación guardada
 function useSavedLocation() {
+    console.log('📍 Usando ubicación guardada...');
+    
     const savedLocation = getSavedLocation();
+    console.log('📍 Ubicación guardada encontrada:', savedLocation);
+    
     if (!savedLocation) {
+        console.log('❌ No hay ubicación guardada');
         showNotification('No hay ubicación guardada. Usa "Obtener Ubicación Actual" primero.', 'error');
         return;
     }
     
+    console.log('✅ Ubicación guardada válida, actualizando campos...');
+    
     // Actualizar los campos de coordenadas
-    document.getElementById('coordLat').value = savedLocation.lat.toFixed(6);
-    document.getElementById('coordLon').value = savedLocation.lon.toFixed(6);
+    const latInput = document.getElementById('coordLat');
+    const lonInput = document.getElementById('coordLon');
+    
+    if (latInput) latInput.value = savedLocation.lat.toFixed(6);
+    if (lonInput) lonInput.value = savedLocation.lon.toFixed(6);
+    
+    console.log('✅ Campos de coordenadas actualizados');
     
     // Centrar el mapa en la ubicación guardada
     map.setView([savedLocation.lat, savedLocation.lon], 15);
+    console.log('✅ Mapa centrado en la ubicación guardada');
     
     showNotification('Ubicación guardada restaurada', 'success');
+    console.log('✅ Ubicación guardada restaurada correctamente');
 }
 
 // Obtener ubicación guardada del localStorage
@@ -1208,12 +1950,19 @@ function getSavedLocation() {
 
 // Actualizar el botón de ubicación según si hay una ubicación guardada
 function updateLocationButton() {
+    console.log('🔄 Actualizando botón de ubicación...');
+    
     const button = document.getElementById('useCurrentLocation');
     const statusDiv = document.getElementById('locationStatus');
     const statusText = document.getElementById('locationStatusText');
     const savedLocation = getSavedLocation();
+    
+    console.log('📍 Ubicación guardada:', savedLocation);
+    console.log('📍 Botón de ubicación guardada:', savedLocationbutton);
+    
     if (savedLocationbutton==true) {
         savedLocation=null;
+        console.log('✅ Ubicación guardada reseteada por botón');
     }
     
     if (savedLocation) {
@@ -1221,10 +1970,13 @@ function updateLocationButton() {
         button.title = `Ubicación guardada: ${savedLocation.lat.toFixed(4)}, ${savedLocation.lon.toFixed(4)}`;
         button.onclick = useSavedLocation;
         savedLocationbutton = true;
+        console.log('✅ Botón configurado para borrar ubicación guardada');
+        
         // Mostrar indicador de ubicación guardada
         if (statusDiv && statusText) {
             statusText.textContent = `📍 Ubicación guardada: ${savedLocation.lat.toFixed(4)}, ${savedLocation.lon.toFixed(4)}`;
             statusDiv.style.display = 'block';
+            console.log('✅ Indicador de ubicación guardada mostrado');
         }
     } else {
         button.textContent = '📍 Obtener Ubicación Actual';
@@ -1234,11 +1986,13 @@ function updateLocationButton() {
         // Ocultar indicador de ubicación guardada
         if (statusDiv) {
             statusDiv.style.display = 'none';
+            console.log('✅ Indicador de ubicación guardada ocultado');
         }
     }
     
     // Actualizar botones de ubicación guardada en todos los paneles
     updateSavedLocationButtons();
+    console.log('✅ Botón de ubicación actualizado correctamente');
 }
 
 // Actualizar botones de ubicación guardada en todos los paneles
@@ -1250,17 +2004,20 @@ function updateSavedLocationButtons() {
         'useSavedLocationZone'
     ];
     
-    console.log('Actualizando botones de ubicación guardada...', savedLocation);
+    console.log('🔄 Actualizando botones de ubicación guardada...');
+    console.log('📍 Ubicación guardada:', savedLocation);
+    console.log('📍 Botones a actualizar:', buttons);
     
     buttons.forEach(buttonId => {
         const button = document.getElementById(buttonId);
-        console.log(`Botón ${buttonId}:`, button);
+        console.log(`🔍 Botón ${buttonId}:`, button);
         
         if (button) {
             // Limpiar estilos anteriores
             button.style.display = '';
             button.style.opacity = '';
             button.style.pointerEvents = '';
+            console.log('✅ Estilos anteriores limpiados');
             
             if (savedLocation) {
                 // Botón habilitado
@@ -1283,6 +2040,8 @@ function updateSavedLocationButtons() {
             console.warn(`⚠️ Botón ${buttonId} no encontrado en el DOM`);
         }
     });
+    
+    console.log('✅ Botones de ubicación guardada actualizados correctamente');
 }
 
 // Usar ubicación guardada para búsqueda (funciona con cualquier tipo de búsqueda)
@@ -1301,6 +2060,7 @@ function useSavedLocationForSearch() {
     
     // Obtener el tipo de búsqueda actual
     const searchType = document.querySelector('input[name="searchType"]:checked').value;
+    console.log('📍 Tipo de búsqueda actual:', searchType);
     
     if (searchType === 'place') {
         // Para búsqueda por lugar, mostrar notificación para hacer clic en el mapa
@@ -1361,7 +2121,8 @@ async function performPlaceSearch(lat, lon) {
     try {
         showNotification(`Buscando ${placeType} en un radio de ${radius} km...`, 'info');
         
-        const response = await fetch(`/api/recursos-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=${placeType}&radio=${radius}`);
+        const url = addFechasToUrl(`/api/recursos-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=${placeType}&radio=${radius}`);
+        const response = await fetch(url);
         const data = await response.json();
         
         if (data.error) {
@@ -1466,17 +2227,27 @@ function clearCoordinates() {
 
 // Mostrar resultados de búsqueda en el mapa
 function displaySearchResults(data, searchType, searchParams) {
+    console.log('📊 Mostrando resultados de búsqueda...');
+    console.log('📍 Resultados encontrados:', data.length);
+    console.log('📍 Tipo de búsqueda:', searchType);
+    console.log('📍 Parámetros de búsqueda:', searchParams);
+    
     // Limpiar búsquedas anteriores
     clearSearchResults();
+    console.log('✅ Búsquedas anteriores limpiadas');
     
     currentSearchData = data;
     currentSearchType = searchType;
+    console.log('✅ Datos de búsqueda actualizados');
     
     // Crear capas para los resultados
     searchLayer = L.layerGroup();
     placesLayer = L.layerGroup();
+    console.log('✅ Capas de resultados creadas');
     
     const { lat, lon, radius } = searchParams;
+    console.log('📍 Coordenadas de búsqueda:', lat, lon);
+    console.log('📍 Radio:', radius);
     
     // Agregar marcador del punto de búsqueda
     const searchIcon = L.divIcon({
@@ -1554,22 +2325,15 @@ function displaySearchResults(data, searchType, searchParams) {
                 fillOpacity: 0.8
             });
             
-            const distancia = recurso.distancia_a_lugar_km || recurso.distancia_a_direccion_km || recurso.distancia_km || 0;
-            
-            marker.bindPopup(`
-                <div style="max-width: 300px;">
-                    <h4>🔧 ${recurso.Name || 'Sin nombre'}</h4>
-                    <p><strong>Nº:</strong> ${recurso.No_}</p>
-                    <p><strong>Distancia:</strong> ${distancia.toFixed(2)} km</p>
-                    <p><strong>Estado:</strong> ${recurso.tiene_incidencia && recurso.total_incidencias > 0 ? '🚨 Con incidencias' : recurso.total_campanas > 0 ? '📋 Con campañas' : '✅ Sin problemas'}</p>
-                    <p><strong>Campañas:</strong> ${recurso.total_campanas || 0}</p>
-                    <p><strong>Incidencias:</strong> ${recurso.total_incidencias || 0}</p>
-                </div>
-            `);
+            // Usar función común para crear el popup
+            crearPopupRecurso(marker, recurso);
             
             searchLayer.addLayer(marker);
         });
     }
+    
+    // Actualizar contador de seleccionados después de añadir recursos de búsqueda
+    updateContadorSeleccionados();
     
     // Agregar capas al mapa
     searchLayer.addTo(map);
@@ -1611,33 +2375,45 @@ function displaySearchResults(data, searchType, searchParams) {
     const lugaresCount = data.lugares ? data.lugares.length : 0;
     const recursosCount = data.recursos ? data.recursos.length : 0;
     
+    console.log('📊 Resumen de búsqueda:');
+    console.log('  - Lugares:', lugaresCount);
+    console.log('  - Recursos:', recursosCount);
+    
     showNotification(
         `✓ Búsqueda completada: ${lugaresCount} lugares, ${recursosCount} recursos encontrados`,
         'success'
     );
+    console.log('✅ Resumen mostrado');
+    
+    console.log('✅ Resultados de búsqueda mostrados correctamente');
 }
 
 // Limpiar resultados de búsqueda
 function clearSearchResults() {
+    console.log('🗑️ Limpiando resultados de búsqueda...');
+    
     if (searchLayer) {
         try {
             map.removeLayer(searchLayer);
+            console.log('✅ Capa de búsqueda limpiada');
         } catch (error) {
-            console.warn('Error removiendo capa de búsqueda:', error);
+            console.warn('⚠️ Error removiendo capa de búsqueda:', error);
         }
         searchLayer = null;
     }
     if (placesLayer) {
         try {
             map.removeLayer(placesLayer);
+            console.log('✅ Capa de lugares limpiada');
         } catch (error) {
-            console.warn('Error removiendo capa de lugares:', error);
+            console.warn('⚠️ Error removiendo capa de lugares:', error);
         }
         placesLayer = null;
     }
     if (radiusCircle) {
         try {
             map.removeLayer(radiusCircle);
+            console.log('✅ Círculo de radio limpiado');
         } catch (error) {
             console.warn('Error removiendo círculo de radio:', error);
         }
@@ -1645,6 +2421,8 @@ function clearSearchResults() {
     }
     currentSearchData = null;
     currentSearchType = null;
+    
+    console.log('✅ Resultados de búsqueda limpiados completamente');
 }
 
 // Cancelar búsqueda por clic
@@ -1698,28 +2476,28 @@ function setupMapClickSearch() {
             switch (searchType) {
                 case '1':
                     // Búsqueda por coordenadas
-                    response = await fetch(`/api/recursos-cerca-coordenadas?lat=${lat}&lon=${lon}&radio=${searchRadius}`);
+                    response = await fetch(addFechasToUrl(`/api/recursos-cerca-coordenadas?lat=${lat}&lon=${lon}&radio=${searchRadius}`));
                     data = await response.json();
                     displaySearchResults(data, 'coordinates', { lat, lon, radius: searchRadius });
                     break;
                     
                 case '2':
                     // Búsqueda por hospitales
-                    response = await fetch(`/api/recursos-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=hospital&radio=${searchRadius}`);
+                    response = await fetch(addFechasToUrl(`/api/recursos-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=hospital&radio=${searchRadius}`));
                     data = await response.json();
                     displaySearchResults(data, 'place', { lat, lon, radius: searchRadius });
                     break;
                     
                 case '3':
                     // Búsqueda por farmacias
-                    response = await fetch(`/api/recursos-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=pharmacy&radio=${searchRadius}`);
+                    response = await fetch(addFechasToUrl(`/api/recursos-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=pharmacy&radio=${searchRadius}`));
                     data = await response.json();
                     displaySearchResults(data, 'place', { lat, lon, radius: searchRadius });
                     break;
                     
                 case '4':
                     // Búsqueda por gasolineras
-                    response = await fetch(`/api/recursos-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=gas_station&radio=${searchRadius}`);
+                    response = await fetch(addFechasToUrl(`/api/recursos-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=gas_station&radio=${searchRadius}`));
                     data = await response.json();
                     displaySearchResults(data, 'place', { lat, lon, radius: searchRadius });
                     break;
@@ -1813,11 +2591,18 @@ function saveCustomZones() {
 
 // Actualizar el selector de zonas
 function updateZoneSelector() {
+    console.log('🔄 Actualizando selector de zonas...');
+    console.log('📍 Zonas disponibles:', customZones.length);
+    
     const select = document.getElementById('zoneSelect');
-    if (!select) return;
+    if (!select) {
+        console.error('❌ Selector de zonas no encontrado');
+        return;
+    }
     
     // Limpiar opciones existentes
     select.innerHTML = '<option value="">Seleccionar zona...</option>';
+    console.log('✅ Opciones limpiadas');
     
     // Agregar zonas
     customZones.forEach((zone, index) => {
@@ -1825,10 +2610,12 @@ function updateZoneSelector() {
         option.value = index;
         option.textContent = zone.name;
         select.appendChild(option);
+        console.log(`✅ Zona agregada: ${zone.name} (índice: ${index})`);
     });
     
     // Actualizar botones de edición/eliminación
     updateZoneButtons();
+    console.log('✅ Selector actualizado correctamente');
 }
 
 // Actualizar botones de edición/eliminación de zonas
@@ -1846,10 +2633,18 @@ function updateZoneButtons() {
 
 // Abrir modal para crear/editar zona
 function openZoneModal() {
+    console.log('📋 Abriendo modal de zona...');
+    
     const modal = document.getElementById('zoneModal');
     const title = document.getElementById('zoneModalTitle');
     const nameInput = document.getElementById('zoneName');
     const descInput = document.getElementById('zoneDescription');
+    
+    console.log('🔍 Elementos del modal:');
+    console.log('  - modal:', modal);
+    console.log('  - title:', title);
+    console.log('  - nameInput:', nameInput);
+    console.log('  - descInput:', descInput);
     
     if (modal && title && nameInput && descInput) {
         currentZone = null;
@@ -1857,8 +2652,15 @@ function openZoneModal() {
         nameInput.value = '';
         descInput.value = '';
         
-        // Limpiar dibujo anterior
-        clearZoneDrawing();
+        console.log('✅ Modal configurado correctamente');
+        
+        // Solo limpiar dibujo si no hay puntos dibujados
+        if (zonePoints.length === 0) {
+            clearZoneDrawing();
+            console.log('✅ Dibujo anterior limpiado (no había puntos)');
+        } else {
+            console.log('✅ Manteniendo puntos dibujados:', zonePoints.length);
+        }
         
         modal.style.display = 'flex';
     }
@@ -1866,71 +2668,140 @@ function openZoneModal() {
 
 // Cerrar modal de zona
 function closeZoneModal() {
+    console.log('❌ Cerrando modal de zona...');
+    
     const modal = document.getElementById('zoneModal');
     if (modal) {
         modal.style.display = 'none';
+        console.log('✅ Modal ocultado');
+        
         clearZoneDrawing();
+        console.log('✅ Dibujo limpiado');
+        
         currentZone = null;
+        console.log('✅ Zona actual reseteada');
+    } else {
+        console.error('❌ Modal de zona no encontrado');
     }
+    
+    console.log('✅ Modal cerrado correctamente');
 }
 
 // Editar zona seleccionada
 function editZone() {
+    console.log('✏️ Editando zona...');
+    
     const select = document.getElementById('zoneSelect');
-    if (!select || select.value === '') return;
+    if (!select || select.value === '') {
+        console.log('⚠️ No hay zona seleccionada para editar');
+        return;
+    }
     
     const zoneIndex = parseInt(select.value);
     const zone = customZones[zoneIndex];
     
+    console.log('📍 Zona a editar:', zone);
+    console.log('📍 Índice:', zoneIndex);
+    
     if (zone) {
         currentZone = zoneIndex;
+        console.log('✅ Zona actual establecida');
+        
         const modal = document.getElementById('zoneModal');
         const title = document.getElementById('zoneModalTitle');
         const nameInput = document.getElementById('zoneName');
         const descInput = document.getElementById('zoneDescription');
+        
+        console.log('🔍 Elementos del modal:');
+        console.log('  - modal:', modal);
+        console.log('  - title:', title);
+        console.log('  - nameInput:', nameInput);
+        console.log('  - descInput:', descInput);
         
         if (modal && title && nameInput && descInput) {
             title.textContent = 'Editar Zona';
             nameInput.value = zone.name;
             descInput.value = zone.description || '';
             
+            console.log('✅ Modal configurado para edición');
+            
             // Mostrar la zona en el mapa
             showZoneOnMap(zone);
+            console.log('✅ Zona mostrada en el mapa');
             
             modal.style.display = 'flex';
+            console.log('✅ Modal mostrado');
+        } else {
+            console.error('❌ No se encontraron todos los elementos del modal');
         }
+    } else {
+        console.error('❌ Zona no encontrada');
     }
+    
+    console.log('✅ Edición de zona iniciada');
 }
 
 // Eliminar zona seleccionada
 function deleteZone() {
+    console.log('🗑️ Eliminando zona...');
+    
     const select = document.getElementById('zoneSelect');
-    if (!select || select.value === '') return;
+    if (!select || select.value === '') {
+        console.log('⚠️ No hay zona seleccionada para eliminar');
+        return;
+    }
     
     const zoneIndex = parseInt(select.value);
     const zone = customZones[zoneIndex];
     
+    console.log('📍 Zona a eliminar:', zone);
+    console.log('📍 Índice:', zoneIndex);
+    
     if (zone && confirm(`¿Estás seguro de que quieres eliminar la zona "${zone.name}"?`)) {
+        console.log('✅ Confirmación recibida, eliminando zona...');
+        
         customZones.splice(zoneIndex, 1);
+        console.log('✅ Zona eliminada de la lista');
+        
         saveCustomZones();
+        console.log('✅ Zona eliminada de localStorage');
+        
         updateZoneSelector();
+        console.log('✅ Selector actualizado');
+        
         removeZoneFromMap(zone);
+        console.log('✅ Zona removida del mapa');
+        
         showNotification(`Zona "${zone.name}" eliminada`, 'success');
+        console.log('✅ Zona eliminada correctamente');
+    } else {
+        console.log('⚠️ Eliminación cancelada por el usuario');
     }
 }
 
 // Manejar selección de zona
 function onZoneSelect() {
+    console.log('🎯 Seleccionando zona...');
+    
     updateZoneButtons();
+    console.log('✅ Botones actualizados');
     
     const select = document.getElementById('zoneSelect');
     if (select && select.value !== '') {
         const zoneIndex = parseInt(select.value);
         const zone = customZones[zoneIndex];
+        
+        console.log('📍 Zona seleccionada:', zone);
+        console.log('📍 Índice:', zoneIndex);
+        
         if (zone) {
             showZoneOnMap(zone);
+            console.log('✅ Zona mostrada en el mapa');
+        } else {
+            console.error('❌ Zona no encontrada');
         }
     } else {
+        console.log('⚠️ No hay zona seleccionada, limpiando mapa');
         clearZoneFromMap();
     }
 }
@@ -1961,9 +2832,25 @@ function startZoneDrawing() {
     const finishBtn = document.getElementById('finishDrawing');
     const clearBtn = document.getElementById('clearDrawing');
     
-    if (startBtn) startBtn.disabled = true;
-    if (finishBtn) finishBtn.disabled = false;
-    if (clearBtn) clearBtn.disabled = false;
+    console.log('🔍 Botones encontrados:');
+    console.log('  - startBtn:', startBtn);
+    console.log('  - finishBtn:', finishBtn);
+    console.log('  - clearBtn:', clearBtn);
+    
+    if (startBtn) {
+        startBtn.disabled = true;
+        console.log('✅ Botón Iniciar deshabilitado');
+    }
+    if (finishBtn) {
+        finishBtn.disabled = false;
+        finishBtn.style.display = 'inline-block';
+        console.log('✅ Botón Finalizar habilitado y visible');
+    }
+    if (clearBtn) {
+        clearBtn.disabled = false;
+        clearBtn.style.display = 'inline-block';
+        console.log('✅ Botón Limpiar habilitado y visible');
+    }
     
     console.log('✅ Botones actualizados');
     
@@ -1971,12 +2858,26 @@ function startZoneDrawing() {
     map.getContainer().style.cursor = 'crosshair';
     console.log('✅ Cursor cambiado a crosshair');
     
-    // Mostrar notificación
-    showNotification('Haz clic en el mapa para dibujar la zona. Doble clic para finalizar.', 'info');
+    // Cerrar el modal para permitir clicks en el mapa (sin limpiar el dibujo)
+    const modal = document.getElementById('zoneModal');
+    if (modal) {
+        modal.style.display = 'none';
+        console.log('✅ Modal cerrado para permitir dibujo');
+    }
+    
+    // Mostrar notificación con instrucciones
+    showNotification('Modal cerrado. Haz clic en el mapa para dibujar la zona. Doble clic para finalizar. Usa "Crear Nueva Zona" para volver al modal.', 'info');
+    
+    // Mostrar botones de control en la interfaz principal
+    showDrawingControls();
     
     // Configurar listener de clic
     const clickHandler = (e) => {
         console.log('🖱️ Click detectado en el mapa');
+        console.log('📍 Evento:', e);
+        console.log('📍 LatLng:', e.latlng);
+        console.log('📍 isDrawingZone:', isDrawingZone);
+        
         if (!isDrawingZone) {
             console.log('⚠️ Dibujo no activo, ignorando click');
             return;
@@ -1994,10 +2895,12 @@ function startZoneDrawing() {
     
     const dblClickHandler = (e) => {
         console.log('🖱️ Doble click detectado en el mapa');
+        console.log('📍 isDrawingZone:', isDrawingZone);
         if (!isDrawingZone) {
             console.log('⚠️ Dibujo no activo, ignorando doble click');
             return;
         }
+        console.log('✅ Finalizando dibujo por doble click');
         finishZoneDrawing();
     };
     
@@ -2009,72 +2912,216 @@ function startZoneDrawing() {
         map.off('dblclick', map._zoneDblClickHandler);
     }
     
+    // Verificar que el mapa esté listo
+    if (!map || !map.getContainer()) {
+        console.error('❌ Mapa no está listo para recibir eventos');
+        showNotification('Error: Mapa no está listo', 'error');
+        return;
+    }
+    
     // Agregar nuevos listeners
     map.on('click', clickHandler);
     map.on('dblclick', dblClickHandler);
     
     console.log('✅ Listeners de click configurados');
+    console.log('📍 Mapa container:', map.getContainer());
+    console.log('📍 Mapa ready:', map._loaded);
     
     // Guardar handlers para poder removerlos
     currentClickHandler = clickHandler;
     map._zoneDblClickHandler = dblClickHandler;
     
     console.log('🎨 Dibujo de zona iniciado correctamente');
+    
+    // Test directo del mapa
+    console.log('🧪 Probando click directo en el mapa...');
+    map.on('click', function(e) {
+        console.log('🧪 TEST: Click detectado en el mapa!', e.latlng);
+    });
+}
+
+// Mostrar controles de dibujo en la interfaz principal
+function showDrawingControls() {
+    console.log('🎛️ Mostrando controles de dibujo...');
+    
+    // Crear o actualizar controles de dibujo
+    let controlsDiv = document.getElementById('drawingControls');
+    if (!controlsDiv) {
+        controlsDiv = document.createElement('div');
+        controlsDiv.id = 'drawingControls';
+        controlsDiv.style.cssText = `
+            position: fixed;
+            top: 20px;
+            left: 20px;
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            z-index: 1000;
+            border: 2px solid #007bff;
+        `;
+        document.body.appendChild(controlsDiv);
+    }
+    
+    controlsDiv.innerHTML = `
+        <h4 style="margin: 0 0 10px 0; color: #007bff;">🎨 Dibujando Zona</h4>
+        <p style="margin: 0 0 10px 0; font-size: 14px;">Haz clic en el mapa para agregar puntos</p>
+        <div style="display: flex; gap: 10px;">
+            <button id="finishDrawingBtn" class="btn btn-success" style="padding: 8px 16px;">
+                ✔ Finalizar Dibujo
+            </button>
+            <button id="clearDrawingBtn" class="btn btn-warning" style="padding: 8px 16px;">
+                🗑️ Limpiar
+            </button>
+        </div>
+    `;
+    
+    // Agregar event listeners
+    document.getElementById('finishDrawingBtn').onclick = () => {
+        console.log('🖱️ Click en Finalizar desde controles');
+        finishZoneDrawing();
+    };
+    
+    document.getElementById('clearDrawingBtn').onclick = () => {
+        console.log('🖱️ Click en Limpiar desde controles');
+        clearZoneDrawing();
+        hideDrawingControls();
+    };
+    
+    console.log('✅ Controles de dibujo mostrados');
+}
+
+// Ocultar controles de dibujo
+function hideDrawingControls() {
+    const controlsDiv = document.getElementById('drawingControls');
+    if (controlsDiv) {
+        controlsDiv.remove();
+        console.log('✅ Controles de dibujo ocultados');
+    }
+}
+
+// Cargar los puntos dibujados en el modal
+function loadDrawnPointsInModal() {
+    console.log('🔄 Cargando puntos dibujados en el modal...');
+    console.log('📍 Puntos a cargar:', zonePoints);
+    
+    if (zonePoints.length > 0) {
+        // Mostrar la zona dibujada en el mapa
+        updateZoneDrawing();
+        console.log('✅ Zona dibujada mostrada en el mapa');
+        
+        // Actualizar información de la zona
+        updateZoneInfo();
+        console.log('✅ Información de zona actualizada');
+        
+        // Habilitar botón de guardar
+        const saveBtn = document.getElementById('saveZone');
+        if (saveBtn) {
+            saveBtn.disabled = false;
+            console.log('✅ Botón guardar habilitado');
+        }
+    } else {
+        console.log('⚠️ No hay puntos para cargar');
+    }
 }
 
 // Finalizar dibujo de zona
 function finishZoneDrawing() {
+    console.log('🏁 Finalizando dibujo de zona...');
+    console.log('📍 Puntos actuales:', zonePoints.length);
+    
     if (!isDrawingZone || zonePoints.length < 2) {
+        console.log('❌ No se puede finalizar: menos de 2 puntos');
         showNotification('Necesitas al menos 2 puntos para crear una zona', 'error');
         return;
     }
     
     isDrawingZone = false;
+    console.log('✅ Estado de dibujo desactivado');
     
     // Actualizar botones
-    document.getElementById('startDrawing').disabled = false;
-    document.getElementById('finishDrawing').disabled = true;
-    document.getElementById('clearDrawing').disabled = false;
-    document.getElementById('saveZone').disabled = false;
+    const startBtn = document.getElementById('startDrawing');
+    const finishBtn = document.getElementById('finishDrawing');
+    const clearBtn = document.getElementById('clearDrawing');
+    const saveBtn = document.getElementById('saveZone');
+    
+    if (startBtn) startBtn.disabled = false;
+    if (finishBtn) finishBtn.disabled = true;
+    if (clearBtn) clearBtn.disabled = false;
+    if (saveBtn) saveBtn.disabled = false;
+    
+    console.log('✅ Botones actualizados');
     
     // Restaurar cursor
-    map.getContainer().style.cursor = '';
+    if (map) {
+        map.getContainer().style.cursor = '';
+        console.log('✅ Cursor restaurado');
+    }
     
     // Remover listeners
     if (currentClickHandler) {
         map.off('click', currentClickHandler);
         currentClickHandler = null;
+        console.log('✅ Listener de click removido');
     }
     if (map._zoneDblClickHandler) {
         map.off('dblclick', map._zoneDblClickHandler);
         map._zoneDblClickHandler = null;
+        console.log('✅ Listener de doble click removido');
     }
     
-    showNotification('Zona dibujada. Puedes guardarla o limpiar para empezar de nuevo.', 'success');
+    showNotification('Zona dibujada. Abriendo modal para guardar...', 'success');
+    console.log('✅ Dibujo de zona finalizado correctamente');
+    
+    // Ocultar controles de dibujo
+    hideDrawingControls();
+    
+    // Volver a abrir el modal para guardar la zona
+    setTimeout(() => {
+        openZoneModal();
+        // Cargar los puntos dibujados en el modal
+        loadDrawnPointsInModal();
+    }, 1000);
 }
 
 // Limpiar dibujo de zona
 function clearZoneDrawing() {
+    console.log('🗑️ Limpiando dibujo de zona...');
+    
     isDrawingZone = false;
     zonePoints = [];
     
+    console.log('✅ Estado de dibujo limpiado');
+    
     // Actualizar botones
-    document.getElementById('startDrawing').disabled = false;
-    document.getElementById('finishDrawing').disabled = true;
-    document.getElementById('clearDrawing').disabled = true;
-    document.getElementById('saveZone').disabled = true;
+    const startBtn = document.getElementById('startDrawing');
+    const finishBtn = document.getElementById('finishDrawing');
+    const clearBtn = document.getElementById('clearDrawing');
+    const saveBtn = document.getElementById('saveZone');
+    
+    if (startBtn) startBtn.disabled = false;
+    if (finishBtn) finishBtn.disabled = true;
+    if (clearBtn) clearBtn.disabled = true;
+    if (saveBtn) saveBtn.disabled = true;
+    
+    console.log('✅ Botones actualizados');
     
     // Restaurar cursor
-    map.getContainer().style.cursor = '';
+    if (map) {
+        map.getContainer().style.cursor = '';
+        console.log('✅ Cursor restaurado');
+    }
     
     // Remover listeners
     if (currentClickHandler) {
         map.off('click', currentClickHandler);
         currentClickHandler = null;
+        console.log('✅ Listener de click removido');
     }
     if (map._zoneDblClickHandler) {
         map.off('dblclick', map._zoneDblClickHandler);
         map._zoneDblClickHandler = null;
+        console.log('✅ Listener de doble click removido');
     }
     
     // Limpiar capa de dibujo
@@ -2082,22 +3129,146 @@ function clearZoneDrawing() {
         map.removeLayer(zoneDrawingLayer);
         zoneDrawingLayer = null;
     }
+    
+    console.log('✅ Dibujo de zona limpiado completamente');
+}
+
+// Actualizar información de la zona
+function updateZoneInfo() {
+    console.log('📊 Actualizando información de la zona...');
+    console.log('📍 Puntos:', zonePoints);
+    
+    const pointsSpan = document.getElementById('zonePoints');
+    const areaSpan = document.getElementById('zoneArea');
+    const perimeterSpan = document.getElementById('zonePerimeter');
+    
+    console.log('🔍 Elementos de información:');
+    console.log('  - pointsSpan:', pointsSpan);
+    console.log('  - areaSpan:', areaSpan);
+    console.log('  - perimeterSpan:', perimeterSpan);
+    
+    if (pointsSpan) {
+        pointsSpan.textContent = `${zonePoints.length} puntos`;
+        console.log('✅ Puntos actualizados:', pointsSpan.textContent);
+    }
+    
+    if (zonePoints.length >= 3) {
+        console.log('🔺 Calculando área y perímetro...');
+        const area = calculatePolygonArea(zonePoints);
+        const perimeter = calculatePolygonPerimeter(zonePoints);
+        
+        console.log('📐 Área calculada:', area);
+        console.log('📏 Perímetro calculado:', perimeter);
+        
+        if (areaSpan) {
+            areaSpan.textContent = `${area.toFixed(2)} m²`;
+            console.log('✅ Área actualizada:', areaSpan.textContent);
+        }
+        if (perimeterSpan) {
+            perimeterSpan.textContent = `${perimeter.toFixed(2)} m`;
+            console.log('✅ Perímetro actualizado:', perimeterSpan.textContent);
+        }
+    } else {
+        console.log('⚠️ Menos de 3 puntos, no se puede calcular área');
+        if (areaSpan) {
+            areaSpan.textContent = '0 m²';
+            console.log('✅ Área reseteada');
+        }
+        if (perimeterSpan) {
+            perimeterSpan.textContent = '0 m';
+            console.log('✅ Perímetro reseteado');
+        }
+    }
+    
+    console.log('✅ Información de zona actualizada');
+}
+
+// Calcular área de polígono
+function calculatePolygonArea(points) {
+    console.log('📐 Calculando área del polígono...');
+    console.log('📍 Puntos:', points);
+    
+    if (points.length < 3) {
+        console.log('⚠️ Menos de 3 puntos, área = 0');
+        return 0;
+    }
+    
+    let area = 0;
+    for (let i = 0; i < points.length; i++) {
+        const j = (i + 1) % points.length;
+        area += points[i][1] * points[j][0];
+        area -= points[j][1] * points[i][0];
+    }
+    
+    const result = Math.abs(area) / 2 * 111320 * 111320; // Aproximación para metros cuadrados
+    console.log('✅ Área calculada:', result);
+    return result;
+}
+
+// Calcular perímetro de polígono
+function calculatePolygonPerimeter(points) {
+    console.log('📏 Calculando perímetro del polígono...');
+    console.log('📍 Puntos:', points);
+    
+    if (points.length < 2) {
+        console.log('⚠️ Menos de 2 puntos, perímetro = 0');
+        return 0;
+    }
+    
+    let perimeter = 0;
+    for (let i = 0; i < points.length; i++) {
+        const j = (i + 1) % points.length;
+        const lat1 = points[i][0];
+        const lon1 = points[i][1];
+        const lat2 = points[j][0];
+        const lon2 = points[j][1];
+        
+        // Fórmula de Haversine para calcular distancia
+        const R = 6371000; // Radio de la Tierra en metros
+        const dLat = (lat2 - lat1) * Math.PI / 180;
+        const dLon = (lon2 - lon1) * Math.PI / 180;
+        const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+                Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                Math.sin(dLon/2) * Math.sin(dLon/2);
+        const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+        const distance = R * c;
+        
+        perimeter += distance;
+    }
+    
+    console.log('✅ Perímetro calculado:', perimeter);
+    return perimeter;
 }
 
 // Actualizar visualización del dibujo de zona
 function updateZoneDrawing() {
-    if (zonePoints.length === 0) return;
+    console.log('🎨 Actualizando visualización del dibujo...');
+    console.log('📍 Puntos actuales:', zonePoints);
+    
+    if (zonePoints.length === 0) {
+        console.log('⚠️ No hay puntos para dibujar');
+        return;
+    }
+    
+    // Verificar que el mapa esté disponible
+    if (!map) {
+        console.error('❌ Mapa no disponible para dibujar');
+        return;
+    }
     
     // Limpiar capa anterior
     if (zoneDrawingLayer) {
+        console.log('🗑️ Limpiando capa anterior');
         map.removeLayer(zoneDrawingLayer);
     }
     
     // Crear nueva capa
     zoneDrawingLayer = L.layerGroup();
+    console.log('✅ Nueva capa de dibujo creada');
     
     // Agregar puntos
     zonePoints.forEach((point, index) => {
+        console.log(`📍 Agregando punto ${index + 1}:`, point);
         const marker = L.circleMarker(point, {
             radius: 6,
             fillColor: '#e74c3c',
@@ -2111,6 +3282,7 @@ function updateZoneDrawing() {
     
     // Agregar líneas si hay más de un punto
     if (zonePoints.length > 1) {
+        console.log('📏 Agregando líneas entre puntos');
         const polyline = L.polyline(zonePoints, {
             color: '#e74c3c',
             weight: 3,
@@ -2122,6 +3294,7 @@ function updateZoneDrawing() {
     
     // Agregar polígono si hay al menos 3 puntos
     if (zonePoints.length >= 3) {
+        console.log('🔺 Agregando polígono');
         const polygon = L.polygon(zonePoints, {
             color: '#e74c3c',
             weight: 2,
@@ -2133,30 +3306,52 @@ function updateZoneDrawing() {
         zoneDrawingLayer.addLayer(polygon);
     }
     
+    // Agregar la capa al mapa
     zoneDrawingLayer.addTo(map);
+    console.log('✅ Capa de dibujo agregada al mapa');
 }
 
 // Guardar zona
 function saveZone() {
+    console.log('💾 Guardando zona...');
+    console.log('📍 Puntos:', zonePoints);
+    
     const nameInput = document.getElementById('zoneName');
     const descInput = document.getElementById('zoneDescription');
     const typeInput = document.querySelector('input[name="zoneType"]:checked');
     
-    if (!nameInput || !descInput || !typeInput) return;
+    console.log('🔍 Elementos del formulario:');
+    console.log('  - nameInput:', nameInput);
+    console.log('  - descInput:', descInput);
+    console.log('  - typeInput:', typeInput);
+    
+    if (!nameInput || !descInput || !typeInput) {
+        console.error('❌ No se encontraron todos los campos del formulario');
+        return;
+    }
     
     const name = nameInput.value.trim();
     const description = descInput.value.trim();
     const type = typeInput.value;
     
+    console.log('📝 Datos del formulario:');
+    console.log('  - name:', name);
+    console.log('  - description:', description);
+    console.log('  - type:', type);
+    
     if (!name) {
+        console.log('❌ Nombre vacío');
         showNotification('Por favor introduce un nombre para la zona', 'error');
         return;
     }
     
     if (zonePoints.length < 2) {
+        console.log('❌ Menos de 2 puntos');
         showNotification('Necesitas dibujar una zona primero', 'error');
         return;
     }
+    
+    console.log('✅ Validaciones pasadas, creando zona...');
     
     // Crear objeto de zona
     const zone = {
@@ -2169,33 +3364,53 @@ function saveZone() {
         updatedAt: new Date().toISOString()
     };
     
+    console.log('✅ Zona creada:', zone);
+    
     // Guardar o actualizar zona
     if (currentZone !== null) {
         customZones[currentZone] = zone;
+        console.log('✅ Zona actualizada en la lista');
         showNotification(`Zona "${name}" actualizada`, 'success');
     } else {
         customZones.push(zone);
+        console.log('✅ Zona agregada a la lista');
         showNotification(`Zona "${name}" creada`, 'success');
     }
     
     // Guardar en localStorage
     saveCustomZones();
+    console.log('✅ Zona guardada en localStorage');
     
     // Actualizar interfaz
     updateZoneSelector();
+    console.log('✅ Selector actualizado');
     clearZoneDrawing();
+    console.log('✅ Dibujo limpiado');
     closeZoneModal();
+    console.log('✅ Modal cerrado');
     
     // Mostrar zona en el mapa
     showZoneOnMap(zone);
+    console.log('✅ Zona mostrada en el mapa');
+    
+    console.log('✅ Zona guardada correctamente');
 }
 
 // Mostrar zona en el mapa
 function showZoneOnMap(zone) {
+    console.log('🗺️ Mostrando zona en el mapa...');
+    console.log('📍 Zona:', zone);
+    
     // Limpiar zona anterior
     clearZoneFromMap();
+    console.log('✅ Zona anterior limpiada');
     
-    if (!zone || !zone.points || zone.points.length < 2) return;
+    if (!zone || !zone.points || zone.points.length < 2) {
+        console.log('❌ Zona inválida o sin puntos suficientes');
+        return;
+    }
+    
+    console.log('✅ Zona válida, creando polígono...');
     
     // Crear capa de zona
     zoneLayer = L.layerGroup();
@@ -2223,39 +3438,61 @@ function showZoneOnMap(zone) {
     
     zoneLayer.addLayer(polygon);
     zoneLayer.addTo(map);
+    console.log('✅ Polígono agregado al mapa');
     
     // Ajustar vista para mostrar la zona
     const group = new L.featureGroup([polygon]);
     if (group.getBounds().isValid()) {
         map.fitBounds(group.getBounds().pad(0.1));
+        console.log('✅ Mapa ajustado para mostrar la zona');
     }
+    
+    console.log('✅ Zona mostrada correctamente en el mapa');
 }
 
 // Limpiar zona del mapa
 function clearZoneFromMap() {
+    console.log('🗑️ Limpiando zona del mapa...');
+    
     if (zoneLayer) {
         map.removeLayer(zoneLayer);
         zoneLayer = null;
+        console.log('✅ Zona limpiada del mapa');
+    } else {
+        console.log('⚠️ No hay zona para limpiar');
     }
+    
+    console.log('✅ Limpieza de zona completada');
 }
 
 // Remover zona específica del mapa
 function removeZoneFromMap(zone) {
+    console.log('🗑️ Removiendo zona específica del mapa...');
+    console.log('📍 Zona a remover:', zone);
+    
     // Esta función se puede expandir si necesitas remover zonas específicas
     clearZoneFromMap();
+    console.log('✅ Zona removida del mapa');
 }
 
 // Buscar recursos en zona
 async function searchByZone() {
+    console.log('🔍 Buscando recursos en zona...');
+    
     const select = document.getElementById('zoneSelect');
     const radius = parseFloat(document.getElementById('zoneRadius').value);
     
+    console.log('📍 Zona seleccionada:', select?.value);
+    console.log('📍 Radio:', radius);
+    
     if (!select || select.value === '') {
+        console.log('❌ No hay zona seleccionada');
         showNotification('Por favor selecciona una zona', 'error');
         return;
     }
     
     if (!radius || radius <= 0 || radius > 50) {
+        console.log('❌ Radio inválido');
         showNotification('Por favor introduce un radio válido entre 0.1 y 50 km', 'error');
         return;
     }
@@ -2263,16 +3500,23 @@ async function searchByZone() {
     const zoneIndex = parseInt(select.value);
     const zone = customZones[zoneIndex];
     
+    console.log('📍 Zona encontrada:', zone);
+    console.log('📍 Índice:', zoneIndex);
+    
     if (!zone || !zone.points || zone.points.length < 2) {
+        console.log('❌ Zona no válida');
         showNotification('Zona no válida', 'error');
         return;
     }
+    
+    console.log('✅ Zona válida, iniciando búsqueda...');
     
     try {
         showNotification(`Buscando recursos en zona "${zone.name}"...`, 'info');
         
         // Obtener todos los recursos
-        const response = await fetch('/api/recursos');
+        const url = addFechasToUrl('/api/recursos');
+        const response = await fetch(url);
         const data = await response.json();
         
         if (data.error) {
@@ -2306,26 +3550,38 @@ async function searchByZone() {
         
         // Mostrar resultados
         displayZoneSearchResults(recursosEnZona, zone, radius);
+        console.log('✅ Resultados mostrados');
         
     } catch (error) {
-        console.error('Error en búsqueda por zona:', error);
+        console.error('❌ Error en búsqueda por zona:', error);
         showNotification(`Error: ${error.message}`, 'error');
     }
+    
+    console.log('✅ Búsqueda en zona completada');
 }
 
 // Mostrar resultados de búsqueda por zona
 function displayZoneSearchResults(recursos, zone, radius) {
+    console.log('📊 Mostrando resultados de búsqueda por zona...');
+    console.log('📍 Recursos encontrados:', recursos.length);
+    console.log('📍 Zona:', zone);
+    console.log('📍 Radio:', radius);
+    
     // Limpiar búsquedas anteriores
     clearSearchResults();
+    console.log('✅ Búsquedas anteriores limpiadas');
     
     // Crear capas para los resultados
     searchLayer = L.layerGroup();
+    console.log('✅ Capa de búsqueda creada');
     
     // Mostrar la zona
     showZoneOnMap(zone);
+    console.log('✅ Zona mostrada en el mapa');
     
     // Mostrar recursos encontrados
     if (recursos.length > 0) {
+        console.log('✅ Mostrando recursos encontrados...');
         recursos.forEach(recurso => {
             // Usar el mismo estilo que los recursos normales
             let color = '#44ff44'; // Verde por defecto
@@ -2344,33 +3600,36 @@ function displayZoneSearchResults(recursos, zone, radius) {
                 fillOpacity: 0.8
             });
             
-            marker.bindPopup(`
-                <div style="max-width: 300px;">
-                    <h4>🔧 ${recurso.Name || 'Sin nombre'}</h4>
-                    <p><strong>Nº:</strong> ${recurso.No_}</p>
-                    <p><strong>Distancia a zona:</strong> ${recurso.distancia_a_zona_km} km</p>
-                    <p><strong>Estado:</strong> ${recurso.tiene_incidencia && recurso.total_incidencias > 0 ? '🚨 Con incidencias' : recurso.total_campanas > 0 ? '📋 Con campañas' : '✅ Sin problemas'}</p>
-                    <p><strong>Campañas:</strong> ${recurso.total_campanas || 0}</p>
-                    <p><strong>Incidencias:</strong> ${recurso.total_incidencias || 0}</p>
-                </div>
-            `);
+            // Usar función común para crear el popup
+            crearPopupRecurso(marker, recurso);
             
             searchLayer.addLayer(marker);
         });
     }
     
+    // Actualizar contador de seleccionados después de añadir recursos de zona
+    updateContadorSeleccionados();
+    
     // Agregar capa al mapa
     searchLayer.addTo(map);
+    console.log('✅ Capa de búsqueda agregada al mapa');
     
     // Mostrar resumen
     showNotification(
         `✓ Búsqueda en zona completada: ${recursos.length} recursos encontrados en "${zone.name}"`,
         'success'
     );
+    console.log('✅ Resumen mostrado');
+    
+    console.log('✅ Resultados de búsqueda por zona mostrados correctamente');
 }
 
 // Función auxiliar para verificar si un punto está dentro de un polígono
 function isPointInPolygon(point, polygon) {
+    console.log('🔍 Verificando si punto está dentro del polígono...');
+    console.log('📍 Punto:', point);
+    console.log('📍 Polígono:', polygon);
+    
     const x = point[0], y = point[1];
     let inside = false;
     
@@ -2383,22 +3642,48 @@ function isPointInPolygon(point, polygon) {
         }
     }
     
+    console.log('✅ Punto dentro del polígono:', inside);
     return inside;
 }
 
 // Función auxiliar para obtener el centro de un polígono
 function getPolygonCenter(points) {
+    console.log('📍 Calculando centro del polígono...');
+    console.log('📍 Puntos:', points);
+    
     let lat = 0, lon = 0;
     points.forEach(point => {
         lat += point[0];
         lon += point[1];
     });
-    return [lat / points.length, lon / points.length];
+    
+    const center = [lat / points.length, lon / points.length];
+    console.log('✅ Centro calculado:', center);
+    return center;
 }
 
 // Función auxiliar para redondear números
 function round(num, decimals) {
     return Math.round(num * Math.pow(10, decimals)) / Math.pow(10, decimals);
+}
+
+// Función auxiliar para calcular distancia entre dos puntos usando la fórmula de Haversine
+function calcular_distancia_haversine(lat1, lon1, lat2, lon2) {
+    console.log('📏 Calculando distancia Haversine...');
+    console.log('📍 Punto 1:', lat1, lon1);
+    console.log('📍 Punto 2:', lat2, lon2);
+    
+    const R = 6371; // Radio de la Tierra en kilómetros
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat/2) * Math.sin(dLat/2) +
+              Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+              Math.sin(dLon/2) * Math.sin(dLon/2);
+    const c = 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+    const distance = R * c;
+    
+    console.log('✅ Distancia calculada:', distance, 'km');
+    return distance;
 }
 
 // Función de prueba para verificar el sistema de zonas
@@ -2437,6 +3722,9 @@ function testZoneSystem() {
 }
 
 // Exportar funciones para uso global
+window.toggleRecursoSeleccionado = toggleRecursoSeleccionado;
+window.exportarRecursosExcel = exportarRecursosExcel;
+
 window.GISApp = {
     loadAllGeoData,
     loadRecursos,

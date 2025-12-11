@@ -5,15 +5,18 @@ Autor: Andreu
 Fecha: 2025
 """
 
-from flask import Flask, render_template, jsonify, request
+from flask import Flask, render_template, jsonify, request, send_file
 from flask_cors import CORS
 import pyodbc
 import json
 import requests
 import os
 import math
+from datetime import datetime, date
 from config.database import get_db_connection
 from config.api_keys import GEOCODING_SERVICES, SEARCH_CONFIG
+import pandas as pd
+from io import BytesIO
 
 # Función global para limpiar datos antes de serializar
 def clean_data(data):
@@ -28,6 +31,25 @@ def clean_data(data):
         return data.isoformat()
     else:
         return data
+
+def get_fechas():
+    """
+    Obtiene las fechas desde los parámetros de la request.
+    Si no se proporcionan, usa la fecha de hoy para ambas.
+    
+    Returns:
+        tuple: (fecha_desde, fecha_hasta) en formato YYYY-MM-DD
+    """
+    fecha_desde = request.args.get('fecha_desde')
+    fecha_hasta = request.args.get('fecha_hasta')
+    
+    # Si no se proporcionan fechas, usar la fecha de hoy
+    fecha_hoy = date.today().strftime('%Y-%m-%d')
+    
+    fecha_desde = fecha_desde if fecha_desde else fecha_hoy
+    fecha_hasta = fecha_hasta if fecha_hasta else fecha_hoy
+    
+    return fecha_desde, fecha_hasta
 
 def calcular_distancia_haversine(lat1, lon1, lat2, lon2):
     """
@@ -695,14 +717,17 @@ def get_geo_data():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Obtener datos de RecursosGis
-        recursos_query = "SELECT * FROM RecursosGis"
-        cursor.execute(recursos_query)
+        # Obtener fechas (usar hoy si no se proporcionan)
+        fecha_desde, fecha_hasta = get_fechas()
+        
+        # Obtener datos usando RecursosPorFechas
+        recursos_query = "SELECT * FROM [dbo].[RecursosPorFechasGlobal](?, ?)"
+        cursor.execute(recursos_query, (fecha_desde, fecha_hasta))
         recursos_results = cursor.fetchall()
         
-        # Obtener datos de MobiliarioGis
-        mobiliario_query = "SELECT * FROM MobiliarioGis"
-        cursor.execute(mobiliario_query)
+        # Obtener datos usando MobiliarioPorFechas
+        mobiliario_query = "SELECT * FROM [dbo].[MobiliarioPorFechas](?, ?)"
+        cursor.execute(mobiliario_query, (fecha_desde, fecha_hasta))
         mobiliario_results = cursor.fetchall()
         
         # Convertir resultados a formato GeoJSON
@@ -785,13 +810,51 @@ def get_incidencias():
 
 @app.route('/api/campanas')
 def get_campanas():
-    """API endpoint para obtener datos de Campañas"""
+    """API endpoint para obtener datos de Campañas con filtros opcionales"""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        query = "SELECT * FROM Campañas"
-        cursor.execute(query)
+        # Obtener parámetros de filtro
+        no_recurso = request.args.get('no_recurso', '')
+        fecha_desde = request.args.get('fecha_desde', '')
+        fecha_hasta = request.args.get('fecha_hasta', '')
+        empresa = request.args.get('empresa', '')
+        
+        # Construir la consulta base
+        query = """
+        SELECT Distinct
+        [Empresa],
+            [Campaña],
+            [Inicio],
+            [Fin],
+            [Cliente],
+            [Nº Recurso]
+            FROM [dbo].[Campañas]
+        """
+        
+        params = []
+        
+        # Añadir filtros si se proporcionan
+        if no_recurso:
+            query += "Where [Nº Recurso] = ?"
+            params.append(no_recurso)
+        
+        if fecha_desde:
+            query += " AND [Fin] >= ?"
+            params.append(fecha_desde)
+        
+        if fecha_hasta:
+            query += " AND [Inicio] <= ?"
+            params.append(fecha_hasta)
+        
+        if empresa:
+            query += " AND Empresa = ?"
+            params.append(empresa)
+        
+        query += " ORDER BY [Inicio] DESC"
+        
+        cursor.execute(query, params)
         results = cursor.fetchall()
         
         # Obtener nombres de columnas
@@ -813,18 +876,165 @@ def get_campanas():
         })
         
     except Exception as e:
+        print(f"❌ Error en endpoint /api/campanas: {e}")
+        import traceback
+        print(f"❌ Traceback completo: {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
-@app.route('/api/recursos')
-def get_recursos():
-    """API endpoint específico para obtener datos de RecursosGis con incidencias y campañas"""
+@app.route('/api/tipos-recurso')
+def get_tipos_recurso():
+    """API endpoint para obtener los tipos de recurso disponibles"""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Query simplificada para obtener recursos básicos
-        query = "SELECT [No_], [Name], [PuntoX], [PuntoY],Incidencia,Campañas FROM [dbo].[RecursosGis]"
-        cursor.execute(query)
+        # Obtener fechas (usar hoy si no se proporcionan)
+        fecha_desde, fecha_hasta = get_fechas()
+        
+        # Obtener tipos de recurso desde RecursosPorFechasGlobal
+        query = """
+        SELECT DISTINCT [Tipo Recurso]
+        FROM [dbo].[RecursosPorFechasGlobal](?, ?)
+        WHERE [Tipo Recurso] <> ''
+        ORDER BY [Tipo Recurso]
+        """
+        cursor.execute(query, (fecha_desde, fecha_hasta))
+        results = cursor.fetchall()
+        
+        tipos = [row[0] for row in results if row[0]]
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "tipos_recurso": tipos,
+            "total": len(tipos)
+        })
+        
+    except Exception as e:
+        print(f"Error en endpoint /api/tipos-recurso: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/empresas')
+def get_empresas():
+    """API endpoint para obtener las empresas disponibles"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Obtener fechas (usar hoy si no se proporcionan)
+        fecha_desde, fecha_hasta = get_fechas()
+        
+        # Obtener empresas desde RecursosPorFechasGlobal
+        query = """
+        SELECT DISTINCT Empresa
+        FROM [dbo].[RecursosPorFechasGlobal](?, ?)
+        WHERE Empresa IS NOT NULL AND Empresa <> ''
+        ORDER BY Empresa
+        """
+        cursor.execute(query, (fecha_desde, fecha_hasta))
+        results = cursor.fetchall()
+        
+        empresas = [row[0] for row in results if row[0]]
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "empresas": empresas,
+            "total": len(empresas)
+        })
+        
+    except Exception as e:
+        print(f"Error en endpoint /api/empresas: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/familias')
+def get_familias():
+    """API endpoint para obtener las familias disponibles"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Obtener fechas (usar hoy si no se proporcionan)
+        fecha_desde, fecha_hasta = get_fechas()
+        
+        # Obtener familias desde RecursosPorFechasGlobal
+        query = """
+        SELECT DISTINCT Familia
+        FROM [dbo].[RecursosPorFechasGlobal](?, ?)
+        WHERE Familia IS NOT NULL AND Familia <> ''
+        ORDER BY Familia
+        """
+        cursor.execute(query, (fecha_desde, fecha_hasta))
+        results = cursor.fetchall()
+        
+        familias = [row[0] for row in results if row[0]]
+        
+        cursor.close()
+        conn.close()
+        
+        return jsonify({
+            "familias": familias,
+            "total": len(familias)
+        })
+        
+    except Exception as e:
+        print(f"Error en endpoint /api/familias: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/recursos')
+def get_recursos():
+    """API endpoint específico para obtener datos de RecursosPorFechasGlobal con incidencias y campañas"""
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Obtener fechas (usar hoy si no se proporcionan)
+        fecha_desde, fecha_hasta = get_fechas()
+        
+        # Obtener tipos de recurso seleccionados (puede ser múltiple, separado por comas)
+        tipos_recurso = request.args.get('tipos_recurso', '')
+        tipos_list = [t.strip() for t in tipos_recurso.split(',') if t.strip()] if tipos_recurso else []
+        
+        # Obtener empresas seleccionadas (puede ser múltiple, separado por comas)
+        empresas = request.args.get('empresas', '')
+        empresas_list = [e.strip() for e in empresas.split(',') if e.strip()] if empresas else []
+        
+        # Obtener familias seleccionadas (puede ser múltiple, separado por comas)
+        familias = request.args.get('familias', '')
+        familias_list = [f.strip() for f in familias.split(',') if f.strip()] if familias else []
+        
+        # Construir la consulta base con filtros
+        where_conditions = []
+        params = [fecha_desde, fecha_hasta]
+        
+        if tipos_list:
+            placeholders_tipos = ','.join(['?' for _ in tipos_list])
+            where_conditions.append(f"[Tipo Recurso] IN ({placeholders_tipos})")
+            params.extend(tipos_list)
+        
+        if empresas_list:
+            placeholders_empresas = ','.join(['?' for _ in empresas_list])
+            where_conditions.append(f"Empresa IN ({placeholders_empresas})")
+            params.extend(empresas_list)
+        
+        if familias_list:
+            placeholders_familias = ','.join(['?' for _ in familias_list])
+            where_conditions.append(f"Familia IN ({placeholders_familias})")
+            params.extend(familias_list)
+        
+        # Construir la consulta
+        query = """
+        SELECT [No_], [Name], [PuntoX], [PuntoY], Incidencia, Campañas, [Tipo Recurso], Empresa
+        FROM [dbo].[RecursosPorFechasGlobal](?, ?)
+        """
+        
+        if where_conditions:
+            query += " WHERE " + " AND ".join(where_conditions)
+        
+        cursor.execute(query, params)
+        
         results = cursor.fetchall()
         
         # Obtener nombres de columnas
@@ -880,12 +1090,15 @@ def get_recursos():
 
 @app.route('/api/mobiliario')
 def get_mobiliario():
-    """API endpoint específico para obtener datos de MobiliarioGis con incidencias"""
+    """API endpoint específico para obtener datos de MobiliarioPorFechas con incidencias"""
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Query simplificada para obtener mobiliario básico
+        # Obtener fechas (usar hoy si no se proporcionan)
+        fecha_desde, fecha_hasta = get_fechas()
+        
+        # Siempre usar MobiliarioPorFechas
         query = """
         SELECT 
             [Nº Emplazamiento],
@@ -900,10 +1113,12 @@ def get_mobiliario():
             [Semoan],
             [PuntoX],
             [PuntoY],
-            [Dirección],Incidencia
-        FROM [dbo].[MobiliarioGis]
+            [Dirección],
+            Incidencia
+        FROM [dbo].[MobiliarioPorFechas](?, ?)
         """
-        cursor.execute(query)
+        cursor.execute(query, (fecha_desde, fecha_hasta))
+        
         results = cursor.fetchall()
         
         # Obtener nombres de columnas
@@ -993,11 +1208,14 @@ def test_database():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Probar consulta simple
-        cursor.execute("SELECT COUNT(*) as total FROM [dbo].[RecursosGis]")
+        # Obtener fechas (usar hoy si no se proporcionan)
+        fecha_desde, fecha_hasta = get_fechas()
+        
+        # Probar consulta simple usando funciones con fechas
+        cursor.execute("SELECT COUNT(*) as total FROM [dbo].[RecursosPorFechasGlobal](?, ?)", (fecha_desde, fecha_hasta))
         recursos_count = cursor.fetchone()[0]
         
-        cursor.execute("SELECT COUNT(*) as total FROM [dbo].[MobiliarioGis]")
+        cursor.execute("SELECT COUNT(*) as total FROM [dbo].[MobiliarioPorFechas](?, ?)", (fecha_desde, fecha_hasta))
         mobiliario_count = cursor.fetchone()[0]
         
         cursor.close()
@@ -1098,16 +1316,31 @@ def geocoding_stats():
         conn = get_db_connection()
         cursor = conn.cursor()
         
+        # Obtener fechas (usar hoy si no se proporcionan)
+        fecha_desde, fecha_hasta = get_fechas()
+        
         # Contar mobiliario con coordenadas válidas
-        cursor.execute("SELECT COUNT(*) FROM [dbo].[MobiliarioGis] WHERE PuntoX != 0 AND PuntoY != 0")
+        cursor.execute("""
+            SELECT COUNT(*) 
+            FROM [dbo].[MobiliarioPorFechas](?, ?) 
+            WHERE PuntoX != 0 AND PuntoY != 0
+        """, (fecha_desde, fecha_hasta))
         con_coordenadas = cursor.fetchone()[0]
         
         # Contar mobiliario sin coordenadas
-        cursor.execute("SELECT COUNT(*) FROM [dbo].[MobiliarioGis] WHERE PuntoX = 0 OR PuntoY = 0 OR PuntoX IS NULL OR PuntoY IS NULL")
+        cursor.execute("""
+            SELECT COUNT(*) 
+            FROM [dbo].[MobiliarioPorFechas](?, ?) 
+            WHERE PuntoX = 0 OR PuntoY = 0 OR PuntoX IS NULL OR PuntoY IS NULL
+        """, (fecha_desde, fecha_hasta))
         sin_coordenadas = cursor.fetchone()[0]
         
         # Contar mobiliario con dirección
-        cursor.execute("SELECT COUNT(*) FROM [dbo].[MobiliarioGis] WHERE [Dirección] IS NOT NULL AND [Dirección] != ''")
+        cursor.execute("""
+            SELECT COUNT(*) 
+            FROM [dbo].[MobiliarioPorFechas](?, ?) 
+            WHERE [Dirección] IS NOT NULL AND [Dirección] != ''
+        """, (fecha_desde, fecha_hasta))
         con_direccion = cursor.fetchone()[0]
         
         cursor.close()
@@ -1165,8 +1398,47 @@ def get_recursos_cerca_lugares():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        query = "SELECT [No_], [Name], [PuntoX], [PuntoY], Incidencia, Campañas FROM [dbo].[RecursosGis] WHERE [PuntoX] != 0 AND [PuntoY] != 0"
-        cursor.execute(query)
+        # Obtener fechas (usar hoy si no se proporcionan)
+        fecha_desde, fecha_hasta = get_fechas()
+        
+        # Obtener tipos de recurso seleccionados (puede ser múltiple, separado por comas)
+        tipos_recurso = request.args.get('tipos_recurso', '')
+        tipos_list = [t.strip() for t in tipos_recurso.split(',') if t.strip()] if tipos_recurso else []
+        
+        # Obtener empresas seleccionadas (puede ser múltiple, separado por comas)
+        empresas = request.args.get('empresas', '')
+        empresas_list = [e.strip() for e in empresas.split(',') if e.strip()] if empresas else []
+        
+        # Obtener familias seleccionadas (puede ser múltiple, separado por comas)
+        familias = request.args.get('familias', '')
+        familias_list = [f.strip() for f in familias.split(',') if f.strip()] if familias else []
+        
+        # Construir la consulta con filtros
+        where_conditions = ["[PuntoX] != 0", "[PuntoY] != 0"]
+        params = [fecha_desde, fecha_hasta]
+        
+        if tipos_list:
+            placeholders_tipos = ','.join(['?' for _ in tipos_list])
+            where_conditions.append(f"[Tipo Recurso] IN ({placeholders_tipos})")
+            params.extend(tipos_list)
+        
+        if empresas_list:
+            placeholders_empresas = ','.join(['?' for _ in empresas_list])
+            where_conditions.append(f"Empresa IN ({placeholders_empresas})")
+            params.extend(empresas_list)
+        
+        if familias_list:
+            placeholders_familias = ','.join(['?' for _ in familias_list])
+            where_conditions.append(f"Familia IN ({placeholders_familias})")
+            params.extend(familias_list)
+        
+        query = f"""
+        SELECT [No_], [Name], [PuntoX], [PuntoY], Incidencia, Campañas, [Tipo Recurso], Empresa
+        FROM [dbo].[RecursosPorFechasGlobal](?, ?) 
+        WHERE {' AND '.join(where_conditions)}
+        """
+        cursor.execute(query, params)
+        
         recursos_results = cursor.fetchall()
         
         columns = [column[0] for column in cursor.description]
@@ -1254,8 +1526,47 @@ def get_recursos_cerca_direccion():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        query = "SELECT [No_], [Name], [PuntoX], [PuntoY], Incidencia, Campañas FROM [dbo].[RecursosGis] WHERE [PuntoX] != 0 AND [PuntoY] != 0"
-        cursor.execute(query)
+        # Obtener fechas (usar hoy si no se proporcionan)
+        fecha_desde, fecha_hasta = get_fechas()
+        
+        # Obtener tipos de recurso seleccionados (puede ser múltiple, separado por comas)
+        tipos_recurso = request.args.get('tipos_recurso', '')
+        tipos_list = [t.strip() for t in tipos_recurso.split(',') if t.strip()] if tipos_recurso else []
+        
+        # Obtener empresas seleccionadas (puede ser múltiple, separado por comas)
+        empresas = request.args.get('empresas', '')
+        empresas_list = [e.strip() for e in empresas.split(',') if e.strip()] if empresas else []
+        
+        # Obtener familias seleccionadas (puede ser múltiple, separado por comas)
+        familias = request.args.get('familias', '')
+        familias_list = [f.strip() for f in familias.split(',') if f.strip()] if familias else []
+        
+        # Construir la consulta con filtros
+        where_conditions = ["[PuntoX] != 0", "[PuntoY] != 0"]
+        params = [fecha_desde, fecha_hasta]
+        
+        if tipos_list:
+            placeholders_tipos = ','.join(['?' for _ in tipos_list])
+            where_conditions.append(f"[Tipo Recurso] IN ({placeholders_tipos})")
+            params.extend(tipos_list)
+        
+        if empresas_list:
+            placeholders_empresas = ','.join(['?' for _ in empresas_list])
+            where_conditions.append(f"Empresa IN ({placeholders_empresas})")
+            params.extend(empresas_list)
+        
+        if familias_list:
+            placeholders_familias = ','.join(['?' for _ in familias_list])
+            where_conditions.append(f"Familia IN ({placeholders_familias})")
+            params.extend(familias_list)
+        
+        query = f"""
+        SELECT [No_], [Name], [PuntoX], [PuntoY], Incidencia, Campañas, [Tipo Recurso], Empresa
+        FROM [dbo].[RecursosPorFechasGlobal](?, ?) 
+        WHERE {' AND '.join(where_conditions)}
+        """
+        cursor.execute(query, params)
+        
         recursos_results = cursor.fetchall()
         
         columns = [column[0] for column in cursor.description]
@@ -1360,8 +1671,47 @@ def get_recursos_cerca_coordenadas():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        query = "SELECT [No_], [Name], [PuntoX], [PuntoY], Incidencia, Campañas FROM [dbo].[RecursosGis] WHERE [PuntoX] != 0 AND [PuntoY] != 0"
-        cursor.execute(query)
+        # Obtener fechas (usar hoy si no se proporcionan)
+        fecha_desde, fecha_hasta = get_fechas()
+        
+        # Obtener tipos de recurso seleccionados (puede ser múltiple, separado por comas)
+        tipos_recurso = request.args.get('tipos_recurso', '')
+        tipos_list = [t.strip() for t in tipos_recurso.split(',') if t.strip()] if tipos_recurso else []
+        
+        # Obtener empresas seleccionadas (puede ser múltiple, separado por comas)
+        empresas = request.args.get('empresas', '')
+        empresas_list = [e.strip() for e in empresas.split(',') if e.strip()] if empresas else []
+        
+        # Obtener familias seleccionadas (puede ser múltiple, separado por comas)
+        familias = request.args.get('familias', '')
+        familias_list = [f.strip() for f in familias.split(',') if f.strip()] if familias else []
+        
+        # Construir la consulta con filtros
+        where_conditions = ["[PuntoX] != 0", "[PuntoY] != 0"]
+        params = [fecha_desde, fecha_hasta]
+        
+        if tipos_list:
+            placeholders_tipos = ','.join(['?' for _ in tipos_list])
+            where_conditions.append(f"[Tipo Recurso] IN ({placeholders_tipos})")
+            params.extend(tipos_list)
+        
+        if empresas_list:
+            placeholders_empresas = ','.join(['?' for _ in empresas_list])
+            where_conditions.append(f"Empresa IN ({placeholders_empresas})")
+            params.extend(empresas_list)
+        
+        if familias_list:
+            placeholders_familias = ','.join(['?' for _ in familias_list])
+            where_conditions.append(f"Familia IN ({placeholders_familias})")
+            params.extend(familias_list)
+        
+        query = f"""
+        SELECT [No_], [Name], [PuntoX], [PuntoY], Incidencia, Campañas, [Tipo Recurso], Empresa
+        FROM [dbo].[RecursosPorFechasGlobal](?, ?) 
+        WHERE {' AND '.join(where_conditions)}
+        """
+        cursor.execute(query, params)
+        
         recursos_results = cursor.fetchall()
         
         columns = [column[0] for column in cursor.description]
@@ -1615,9 +1965,11 @@ def get_recurso_detalles(recurso_id):
             campana = dict(zip(campanas_columns, row))
             campanas_data.append(clean_data(campana))
         
+        cursor.close()
         conn.close()
         
         print(f"✅ Respuesta enviada: {len(incidencias_data)} incidencias y {len(campanas_data)} campañas para recurso {recurso_id}")
+        print(f"✅ Datos de campañas: {campanas_data}")
         
         return jsonify({
             "success": True,
@@ -1634,5 +1986,72 @@ def get_recurso_detalles(recurso_id):
         print(f"❌ Traceback completo: {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/exportar-excel', methods=['POST'])
+def exportar_excel():
+    """Endpoint para exportar recursos seleccionados a Excel"""
+    try:
+        data = request.get_json()
+        recursos_nos = data.get('recursos', [])
+        
+        if not recursos_nos:
+            return jsonify({"error": "No se proporcionaron recursos para exportar"}), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Obtener fechas (usar hoy si no se proporcionan)
+        fecha_desde, fecha_hasta = get_fechas()
+        
+        # Construir la consulta para obtener los recursos seleccionados
+        placeholders = ','.join(['?' for _ in recursos_nos])
+        query = f"""
+        SELECT [No_], [Name], [PuntoX], [PuntoY], Incidencia, Campañas, [Tipo Recurso], Empresa
+        FROM [dbo].[RecursosPorFechasGlobal](?, ?)
+        WHERE [No_] IN ({placeholders})
+        """
+        
+        params = [fecha_desde, fecha_hasta] + recursos_nos
+        cursor.execute(query, params)
+        
+        # Obtener nombres de columnas
+        columns = [column[0] for column in cursor.description]
+        results = cursor.fetchall()
+        
+        # Convertir resultados a lista de listas (pandas necesita esto)
+        rows = []
+        for row in results:
+            rows.append(list(row))
+        
+        # Convertir a DataFrame
+        df = pd.DataFrame(rows, columns=columns)
+        
+        # Crear archivo Excel en memoria
+        output = BytesIO()
+        with pd.ExcelWriter(output, engine='openpyxl') as writer:
+            df.to_excel(writer, index=False, sheet_name='Recursos')
+        
+        output.seek(0)
+        
+        cursor.close()
+        conn.close()
+        
+        # Enviar el archivo
+        return send_file(
+            output,
+            mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+            as_attachment=True,
+            download_name=f'recursos_seleccionados_{date.today().strftime("%Y%m%d")}.xlsx'
+        )
+        
+    except Exception as e:
+        print(f"❌ Error exportando a Excel: {e}")
+        import traceback
+        print(f"❌ Traceback completo: {traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
+
+
+# Configuración para IIS
+# Nota: Para IIS, usar wsgi.py como punto de entrada
 if __name__ == "__main__":
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    # Modo desarrollo (solo si se ejecuta directamente main.py)
+    app.run(debug=True, host='0.0.0.0', port=5016)

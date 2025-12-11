@@ -10,23 +10,47 @@
 <body>
     <div class="container">
         <header>
-            <h1>🗺️ Sistema de Información Geográfica</h1>
-            <p>Aplicación web para visualización de datos geoespaciales</p>
+            <div class="header-content">
+                <div class="header-title">
+                    <h1>🗺️ Sistema de Información Geográfica</h1>
+                    <p>Aplicación web para visualización de datos geoespaciales</p>
+                </div>
+                <div class="legend-header">
+                    <h4>Leyenda</h4>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #44ff44;"></div>
+                        <span>Recursos sin problemas</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #ff8800;"></div>
+                        <span>Recursos con campañas</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-color" style="background-color: #ff4444;"></div>
+                        <span>Recursos con incidencias</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-icon" style="background-color: #4488ff; color: white; width: 8px; height: 8px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 5px; border: 1px solid rgba(255,255,255,0.5);">🚌</div>
+                        <span>Mobiliario sin incidencias</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-icon" style="background-color: #ff8800; color: white; width: 8px; height: 8px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 5px; border: 1px solid rgba(255,255,255,0.5);">🚌</div>
+                        <span>Mobiliario con incidencias</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-icon" style="background-color: #9c27b0; color: white; width: 8px; height: 8px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 5px; border: 1px solid rgba(255,255,255,0.5);">📍</div>
+                        <span>Lugares encontrados</span>
+                    </div>
+                    <div class="legend-item">
+                        <div class="legend-icon" style="background-color: #ff5722; color: white; width: 8px; height: 8px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 5px; border: 1px solid rgba(255,255,255,0.5);">🎯</div>
+                        <span>Punto de búsqueda</span>
+                    </div>
+                </div>
+            </div>
         </header>
         
         <main>
-            <div class="map-container">
-                <div id="map"></div>
-            </div>
-            
             <div class="controls">
-                <h3>Controles de Datos</h3>
-                <button id="loadAllData" class="btn btn-primary">Cargar Todos los Datos</button>
-                <button id="loadRecursos" class="btn btn-success">Cargar Recursos</button>
-                <button id="loadMobiliario" class="btn btn-info">Cargar Mobiliario</button>
-                <button id="clearMap" class="btn btn-secondary">Limpiar Mapa</button>
-                <div id="status" class="status"></div>
-                
                 <!-- Nueva sección de búsqueda -->
                 <div class="search-section">
                     <h3>🔍 Buscar Recursos Cerca</h3>
@@ -139,50 +163,83 @@
                     </div>
                     
                     <div class="search-instructions">
-                        <p><strong>💡 Instrucciones:</strong></p>
-                        <ul>
-                            <li><strong>Tipo de lugar:</strong> Selecciona el tipo y haz clic en el mapa para buscar</li>
-                            <li><strong>Coordenadas:</strong> Introduce coordenadas manualmente, haz clic en el mapa o usa tu ubicación actual</li>
-                            <li><strong>Ubicación actual:</strong> La primera vez obtén tu ubicación GPS, después podrás reutilizarla fácilmente</li>
-                            <li><strong>Dirección:</strong> Escribe una dirección y busca recursos cerca</li>
-                            <li><strong>Zona personalizada:</strong> Crea zonas dibujando en el mapa y guárdalas para búsquedas futuras</li>
-                            <li><strong>Radio obligatorio:</strong> Siempre debes especificar el radio de búsqueda (0.1-50 km)</li>
-                            <li><strong>Posicionamiento:</strong> Para búsquedas por tipo de lugar, haz clic en el mapa donde quieres buscar</li>
-                        </ul>
+                        <button type="button" class="instructions-toggle" onclick="toggleInstructions()">
+                            <span id="instructionsIcon">▶</span> <strong>💡 Instrucciones</strong>
+                        </button>
+                        <div id="instructionsContent" style="display: none; margin-top: 0.5rem;">
+                            <ul>
+                                <li><strong>Tipo de lugar:</strong> Selecciona el tipo y haz clic en el mapa para buscar</li>
+                                <li><strong>Coordenadas:</strong> Introduce coordenadas manualmente, haz clic en el mapa o usa tu ubicación actual</li>
+                                <li><strong>Ubicación actual:</strong> La primera vez obtén tu ubicación GPS, después podrás reutilizarla fácilmente</li>
+                                <li><strong>Dirección:</strong> Escribe una dirección y busca recursos cerca</li>
+                                <li><strong>Zona personalizada:</strong> Crea zonas dibujando en el mapa y guárdalas para búsquedas futuras</li>
+                                <li><strong>Radio obligatorio:</strong> Siempre debes especificar el radio de búsqueda (0.1-50 km)</li>
+                                <li><strong>Posicionamiento:</strong> Para búsquedas por tipo de lugar, haz clic en el mapa donde quieres buscar</li>
+                            </ul>
+                        </div>
                     </div>
                 </div>
                 
-                <div class="legend">
-                    <h4>Leyenda</h4>
-                    <div class="legend-item">
-                        <div class="legend-color" style="background-color: #44ff44;"></div>
-                        <span>Recursos sin problemas</span>
+                <!-- Botón Limpiar Mapa -->
+                <button id="clearMap" class="btn btn-secondary" style="width: 100%; margin-top: 1rem;">Limpiar Mapa</button>
+                
+                <!-- Controles de Datos -->
+                <div class="filters-section">
+                    <h3>Controles de Datos</h3>
+                    <div class="form-group dates-row">
+                        <div class="date-field">
+                            <label for="fechaDesde">Fecha Desde:</label>
+                            <input type="date" id="fechaDesde" class="form-control">
+                        </div>
+                        <div class="date-field">
+                            <label for="fechaHasta">Fecha Hasta:</label>
+                            <input type="date" id="fechaHasta" class="form-control">
+                        </div>
                     </div>
-                    <div class="legend-item">
-                        <div class="legend-color" style="background-color: #ff8800;"></div>
-                        <span>Recursos con campañas</span>
+                    <div class="form-group">
+                        <label for="tiposRecurso">Tipo de Recurso (múltiple):</label>
+                        <select id="tiposRecurso" class="form-control" multiple size="4" style="min-height: 80px; font-size: 0.8rem;">
+                            <option value="">Cargando tipos...</option>
+                        </select>
+                        <small class="form-text text-muted" style="font-size: 0.7rem;">Ctrl/Cmd para múltiples</small>
                     </div>
-                    <div class="legend-item">
-                        <div class="legend-color" style="background-color: #ff4444;"></div>
-                        <span>Recursos con incidencias</span>
+                    <div class="form-group">
+                        <label for="empresas">Empresa (múltiple):</label>
+                        <select id="empresas" class="form-control" multiple size="4" style="min-height: 80px; font-size: 0.8rem;">
+                            <option value="">Cargando empresas...</option>
+                        </select>
+                        <small class="form-text text-muted" style="font-size: 0.7rem;">Ctrl/Cmd para múltiples</small>
                     </div>
-                    <div class="legend-item">
-                        <div class="legend-icon" style="background-color: #4488ff; color: white; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">🚌</div>
-                        <span>Mobiliario sin incidencias</span>
+                    <div class="form-group">
+                        <label for="familias">Familia (múltiple):</label>
+                        <select id="familias" class="form-control" multiple size="4" style="min-height: 80px; font-size: 0.8rem;">
+                            <option value="">Cargando familias...</option>
+                        </select>
+                        <small class="form-text text-muted" style="font-size: 0.7rem;">Ctrl/Cmd para múltiples</small>
                     </div>
-                    <div class="legend-item">
-                        <div class="legend-icon" style="background-color: #ff8800; color: white; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">🚌</div>
-                        <span>Mobiliario con incidencias</span>
-                    </div>
-                    <div class="legend-item">
-                        <div class="legend-icon" style="background-color: #9c27b0; color: white; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">📍</div>
-                        <span>Lugares encontrados</span>
-                    </div>
-                    <div class="legend-item">
-                        <div class="legend-icon" style="background-color: #ff5722; color: white; width: 20px; height: 20px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; border: 2px solid white; box-shadow: 0 2px 4px rgba(0,0,0,0.3);">🎯</div>
-                        <span>Punto de búsqueda</span>
-                    </div>
+                    <button id="loadAllData" class="btn btn-primary">Cargar Todos los Datos</button>
+                    <button id="loadRecursos" class="btn btn-success">Cargar Recursos</button>
+                    <button id="loadMobiliario" class="btn btn-info">Cargar Mobiliario</button>
+                    <div id="status" class="status"></div>
                 </div>
+                
+                <!-- Sección de Exportar Excel -->
+                <div class="filters-section" style="margin-top: 1rem;">
+                    <h3>Exportar Excel</h3>
+                    <p style="font-size: 0.8rem; color: #666; margin-bottom: 0.5rem;">
+                        Selecciona recursos en el mapa para exportarlos a Excel
+                    </p>
+                    <p id="contadorSeleccionados" style="font-size: 0.75rem; color: #667eea; font-weight: bold; margin-bottom: 0.75rem;">
+                        (0 seleccionados)
+                    </p>
+                    <button id="exportarExcel" class="btn btn-success" style="width: 100%;">
+                        📥 Exportar Recursos Seleccionados
+                    </button>
+                </div>
+            </div>
+            
+            <div class="map-container">
+                <div id="map"></div>
             </div>
         </main>
         

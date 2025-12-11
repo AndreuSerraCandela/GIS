@@ -102,6 +102,6 @@ Una vez creadas las vistas:
 
 1. Ejecuta `python test_connection.py` para verificar la conexión
 2. Ejecuta `python main.py` para iniciar la aplicación web
-3. Abre http://localhost:5000 en tu navegador
+3. Abre http://localhost:5016 en tu navegador
 4. Usa los botones para cargar datos de las vistas
 
