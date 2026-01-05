@@ -17,6 +17,7 @@ from config.database import get_db_connection
 from config.api_keys import GEOCODING_SERVICES, SEARCH_CONFIG
 import pandas as pd
 from io import BytesIO
+import base64
 
 # Función global para limpiar datos antes de serializar
 def clean_data(data):
@@ -817,9 +818,27 @@ def get_campanas():
         
         # Obtener parámetros de filtro
         no_recurso = request.args.get('no_recurso', '')
-        fecha_desde = request.args.get('fecha_desde', '')
-        fecha_hasta = request.args.get('fecha_hasta', '')
+        fecha_desde_str = request.args.get('fecha_desde', '')
+        fecha_hasta_str = request.args.get('fecha_hasta', '')
         empresa = request.args.get('empresa', '')
+        
+        # Validar y convertir fechas
+        fecha_desde = None
+        fecha_hasta = None
+        
+        if fecha_desde_str:
+            try:
+                fecha_desde = datetime.strptime(fecha_desde_str, '%Y-%m-%d').date()
+            except ValueError:
+                print(f"⚠️ Formato de fecha_desde inválido: {fecha_desde_str}")
+                return jsonify({"error": f"Formato de fecha_desde inválido: {fecha_desde_str}. Use formato YYYY-MM-DD"}), 400
+        
+        if fecha_hasta_str:
+            try:
+                fecha_hasta = datetime.strptime(fecha_hasta_str, '%Y-%m-%d').date()
+            except ValueError:
+                print(f"⚠️ Formato de fecha_hasta inválido: {fecha_hasta_str}")
+                return jsonify({"error": f"Formato de fecha_hasta inválido: {fecha_hasta_str}. Use formato YYYY-MM-DD"}), 400
         
         # Construir la consulta base
         query = """
@@ -834,25 +853,33 @@ def get_campanas():
         """
         
         params = []
+        where_clauses = []
         
         # Añadir filtros si se proporcionan
         if no_recurso:
-            query += "Where [Nº Recurso] = ?"
+            where_clauses.append("[Nº Recurso] = ?")
             params.append(no_recurso)
         
         if fecha_desde:
-            query += " AND [Fin] >= ?"
+            where_clauses.append("[Fin] >= ?")
             params.append(fecha_desde)
         
         if fecha_hasta:
-            query += " AND [Inicio] <= ?"
+            where_clauses.append("[Inicio] <= ?")
             params.append(fecha_hasta)
         
         if empresa:
-            query += " AND Empresa = ?"
+            where_clauses.append("Empresa = ?")
             params.append(empresa)
         
+        # Añadir WHERE si hay filtros
+        if where_clauses:
+            query += " WHERE " + " AND ".join(where_clauses)
+        
         query += " ORDER BY [Inicio] DESC"
+        
+        print(f"📊 Query de campañas: {query}")
+        print(f"📊 Parámetros: {params}")
         
         cursor.execute(query, params)
         results = cursor.fetchall()
@@ -1026,7 +1053,7 @@ def get_recursos():
         
         # Construir la consulta
         query = """
-        SELECT [No_], [Name], [PuntoX], [PuntoY], Incidencia, Campañas, [Tipo Recurso], Empresa
+        SELECT [No_], [Name], [PuntoX], [PuntoY], Incidencia, Campañas, [Tipo Recurso], Empresa, [Ruta]
         FROM [dbo].[RecursosPorFechasGlobal](?, ?)
         """
         
@@ -1433,7 +1460,7 @@ def get_recursos_cerca_lugares():
             params.extend(familias_list)
         
         query = f"""
-        SELECT [No_], [Name], [PuntoX], [PuntoY], Incidencia, Campañas, [Tipo Recurso], Empresa
+        SELECT [No_], [Name], [PuntoX], [PuntoY], Incidencia, Campañas, [Tipo Recurso], Empresa, [Ruta]
         FROM [dbo].[RecursosPorFechasGlobal](?, ?) 
         WHERE {' AND '.join(where_conditions)}
         """
@@ -1561,7 +1588,7 @@ def get_recursos_cerca_direccion():
             params.extend(familias_list)
         
         query = f"""
-        SELECT [No_], [Name], [PuntoX], [PuntoY], Incidencia, Campañas, [Tipo Recurso], Empresa
+        SELECT [No_], [Name], [PuntoX], [PuntoY], Incidencia, Campañas, [Tipo Recurso], Empresa, [Ruta]
         FROM [dbo].[RecursosPorFechasGlobal](?, ?) 
         WHERE {' AND '.join(where_conditions)}
         """
@@ -1706,7 +1733,7 @@ def get_recursos_cerca_coordenadas():
             params.extend(familias_list)
         
         query = f"""
-        SELECT [No_], [Name], [PuntoX], [PuntoY], Incidencia, Campañas, [Tipo Recurso], Empresa
+        SELECT [No_], [Name], [PuntoX], [PuntoY], Incidencia, Campañas, [Tipo Recurso], Empresa, [Ruta]
         FROM [dbo].[RecursosPorFechasGlobal](?, ?) 
         WHERE {' AND '.join(where_conditions)}
         """
@@ -2005,7 +2032,7 @@ def exportar_excel():
         # Construir la consulta para obtener los recursos seleccionados
         placeholders = ','.join(['?' for _ in recursos_nos])
         query = f"""
-        SELECT [No_], [Name], [PuntoX], [PuntoY], Incidencia, Campañas, [Tipo Recurso], Empresa
+        SELECT [No_], [Name], [PuntoX], [PuntoY], Incidencia, Campañas, [Tipo Recurso], Empresa, [Ruta]
         FROM [dbo].[RecursosPorFechasGlobal](?, ?)
         WHERE [No_] IN ({placeholders})
         """
@@ -2049,6 +2076,38 @@ def exportar_excel():
         print(f"❌ Traceback completo: {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/file')
+def get_file():
+    """
+    Endpoint para obtener archivos (imágenes) y devolverlos como base64.
+    Recibe el parámetro filepath por GET.
+    """
+    try:
+        filepath = request.args.get('filepath', '')
+        
+        if not filepath:
+            return jsonify({"error": "Parámetro filepath requerido"}), 400
+        
+        # Verificar que el archivo existe
+        if not os.path.exists(filepath):
+            print(f"⚠️ Archivo no encontrado: {filepath}")
+            return jsonify({"error": "Archivo no encontrado"}), 404
+        
+        # Leer el archivo y convertirlo a base64
+        try:
+            with open(filepath, 'rb') as f:
+                file_content = f.read()
+                base64_content = base64.b64encode(file_content).decode('utf-8')
+                return base64_content, 200, {'Content-Type': 'text/plain'}
+        except Exception as e:
+            print(f"❌ Error leyendo archivo {filepath}: {e}")
+            return jsonify({"error": f"Error leyendo archivo: {str(e)}"}), 500
+            
+    except Exception as e:
+        print(f"❌ Error en endpoint /file: {e}")
+        import traceback
+        print(f"❌ Traceback completo: {traceback.format_exc()}")
+        return jsonify({"error": str(e)}), 500
 
 # Configuración para IIS
 # Nota: Para IIS, usar wsgi.py como punto de entrada

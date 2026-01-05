@@ -33,6 +33,95 @@ let zoneLayer = null;
 let recursosSeleccionados = new Set(); // Almacena los No_ de recursos seleccionados
 let recursosDataMap = new Map(); // Almacena los datos completos de cada recurso por No_
 
+// Función para obtener el icono según el tipo de recurso
+function getIconoPorTipoRecurso(tipoRecurso, color) {
+    // Normalizar el tipo de recurso (trim, mayúsculas)
+    const tipoNormalizado = tipoRecurso ? tipoRecurso.trim().toUpperCase() : '';
+    
+    // Mapeo de tipos de recurso a iconos/emojis (en mayúsculas para comparación)
+    const iconosPorTipo = {
+        'APAR.OB.B': '📺',      // Aparato Oblicuo B
+        'ASCENSOR': '🛗',        // Ascensor
+        'ASCENSORES': '🛗',      // Ascensores (plural)
+        'BANDEROLA': '🚩',       // Banderola
+        'IND.CALLE': '🚏',       // Indicador Calle
+        'INDICADOR': '🚏',       // Indicador
+        'MARQUESINA': '🏢',      // Marquesina
+        'MUEBLE': '🪑',          // Mueble
+        'PANEL': '📋',           // Panel
+        'POSTER': '🖼️',         // Poster
+        'MONOPOSTER':'📍',
+        'ROTULO': '📝',         // Rótulo
+        'VALLA': '🪧',        // Valla
+        'V.PARKING': '🪧',        // V. Parking,
+        'V.PEATONAL': '🚧',        // Vallado
+        'VPEATON': '🚧',        // Vallado
+        'V.2x1,5': '🪧',        // V. Peatonal,
+        'OPI': '🖼️',        // OPI,
+        'OPI SMAP': '🪟',        // OPI SMAP,
+        'MINI OPI': '🪟',        // Mini OPI,
+        'LUMINOSOS': '💡',        // Luminos,
+        'OPI DIGITAL': '📱',        // OPI Digital móvil,
+        'OPIDIGITAL': '📱',        // OPI Digital móvil,
+        'OPI DIGIT.': '📱',        // OPI Digital móvil,
+        'P.LEDS': '📱',        // OPI Digital móvil,
+        'RELOJ': '🕒',        // Reloj,
+        'MEDIANERA':'🧱',// PAred ladrillo
+        'VARIOS':'🔧',// Varios
+        // Añadir más tipos según sea necesario
+    };
+    
+    // Buscar el emoji (búsqueda exacta primero, luego parcial)
+    let emoji = iconosPorTipo[tipoNormalizado];
+    
+    // Si no se encuentra exacto, buscar parcialmente
+    if (!emoji && tipoNormalizado) {
+        for (const [tipo, icono] of Object.entries(iconosPorTipo)) {
+            if (tipoNormalizado.includes(tipo) || tipo.includes(tipoNormalizado)) {
+                emoji = icono;
+                break;
+            }
+        }
+    }
+    
+    // Si aún no se encuentra, usar uno por defecto
+    if (!emoji) {
+        emoji = '🔧';
+        // Log solo para los primeros casos para no saturar la consola
+        if (!getIconoPorTipoRecurso._loggedTypes) {
+            getIconoPorTipoRecurso._loggedTypes = new Set();
+        }
+        if (!getIconoPorTipoRecurso._loggedTypes.has(tipoNormalizado) && getIconoPorTipoRecurso._loggedTypes.size < 10) {
+            console.log(`⚠️ Tipo de recurso no mapeado: "${tipoRecurso}" (normalizado: "${tipoNormalizado}") - usando icono por defecto 🔧`);
+            getIconoPorTipoRecurso._loggedTypes.add(tipoNormalizado);
+        }
+    }
+    
+    // Crear icono personalizado con el color de fondo según el estado
+    return L.divIcon({
+        className: 'custom-recurso-icon',
+        html: `<div style="
+            background-color: ${color};
+            color: white;
+            width: 24px;
+            height: 24px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            font-weight: bold;
+            border: 2px solid white;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.3);
+            text-align: center;
+            line-height: 20px;
+        ">${emoji}</div>`,
+        iconSize: [24, 24],
+        iconAnchor: [12, 12],
+        popupAnchor: [0, -12]
+    });
+}
+
 // Función común para crear un popup completo de recurso con carga de detalles
 function crearPopupRecurso(marker, recurso) {
     // Almacenar datos del recurso
@@ -165,6 +254,53 @@ function crearPopupRecurso(marker, recurso) {
                 : (dataDetalles.campanas || []);
             const totalCampanas = dataCampanas.total_registros || dataDetalles.total_campanas || 0;
             
+            // Cargar imagen del recurso si existe el campo Ruta
+            let imagenBase64 = null;
+            
+            // Verificar campos disponibles en el recurso
+            console.log(`📷 Campos del recurso:`, Object.keys(recurso));
+            console.log(`📷 Recurso.Ruta:`, recurso.Ruta);
+            console.log(`📷 Recurso['Ruta']:`, recurso['Ruta']);
+            console.log(`📷 Recurso.No_:`, recurso.No_);
+            
+            // Intentar obtener Ruta con diferentes nombres posibles
+            const ruta = recurso.Ruta || recurso['Ruta'] || recurso.ruta || '';
+            const numeroRecurso = recurso.No_ || recurso['No_'] || '';
+            
+            console.log(`📷 Ruta encontrada: "${ruta}", Número: "${numeroRecurso}"`);
+            
+            if (ruta && numeroRecurso) {
+                try {
+                    const filepath = ruta+'/' + numeroRecurso + '.jpg';
+                    const urlImagen = `/file?filepath=${encodeURIComponent(filepath)}`;
+                    console.log(`📷 Cargando imagen desde: ${urlImagen}`);
+                    console.log(`📷 Filepath completo: ${filepath}`);
+                    
+                    const responseImagen = await fetch(urlImagen);
+                    console.log(`📷 Respuesta de imagen:`, responseImagen.status, responseImagen.statusText);
+                    
+                    if (responseImagen.ok) {
+                        const imagenData = await responseImagen.text();
+                        console.log(`📷 Datos recibidos (primeros 100 caracteres):`, imagenData.substring(0, 100));
+                        
+                        // Verificar si es base64 válido
+                        if (imagenData && imagenData.trim().length > 0) {
+                            imagenBase64 = imagenData;
+                            console.log(`✅ Imagen cargada correctamente (${imagenData.length} caracteres)`);
+                        } else {
+                            console.warn(`⚠️ Imagen recibida pero está vacía`);
+                        }
+                    } else {
+                        const errorText = await responseImagen.text();
+                        console.log(`⚠️ No se pudo cargar la imagen: ${responseImagen.status} - ${errorText}`);
+                    }
+                } catch (error) {
+                    console.error(`❌ Error cargando imagen del recurso:`, error);
+                }
+            } else {
+                console.log(`⚠️ No se puede cargar imagen: Ruta="${ruta}", No_="${numeroRecurso}"`);
+            }
+            
             let tooltipContent = `
                 <div style="max-width: 400px; max-height: 500px; overflow-y: auto; padding: 5px;">
                     <h4>🔧 Recurso: ${recurso.Name || 'Sin nombre'}</h4>
@@ -174,6 +310,15 @@ function crearPopupRecurso(marker, recurso) {
                     <p><strong>Estado:</strong> ${dataDetalles.total_incidencias > 0 ? '🚨 Con incidencias' : totalCampanas > 0 ? '📋 Con campañas' : '✅ Sin problemas'}</p>
                     <p><strong>Total campañas:</strong> ${totalCampanas}</p>
                     <p><strong>Total incidencias:</strong> ${dataDetalles.total_incidencias || 0}</p>
+                    ${imagenBase64 ? `
+                    <div style="margin: 10px 0; text-align: center;">
+                        <h5>📷 Foto del Recurso</h5>
+                        <img src="data:image/jpeg;base64,${imagenBase64}" 
+                             alt="Foto del recurso ${recurso.No_}" 
+                             style="max-width: 100%; max-height: 200px; border-radius: 5px; border: 1px solid #ddd; box-shadow: 0 2px 4px rgba(0,0,0,0.1);"
+                             onerror="this.style.display='none';">
+                    </div>
+                    ` : ''}
                     <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #ddd;">
                         <label style="display: flex; align-items: center; cursor: pointer;">
                             <input type="checkbox" id="select-detail-${recurso.No_}" 
@@ -795,11 +940,23 @@ async function loadAllGeoData() {
 
 // Función auxiliar para cargar datos de recursos
 async function loadRecursosData(data) {
-    recursosLayer = L.layerGroup();
+    // Verificar que el mapa esté inicializado
+    if (!map) {
+        console.error('❌ El mapa no está inicializado');
+        return;
+    }
+    
+    // Crear un nuevo layer (asegurarse de que no se reutiliza el anterior)
+    const newRecursosLayer = L.layerGroup();
+    recursosLayer = newRecursosLayer;
+    console.log('✅ Nuevo layer de recursos creado:', recursosLayer);
+    console.log('ID del layer:', recursosLayer._leaflet_id);
     
     // Procesar en lotes para mejor rendimiento
     const batchSize = 100;
     const totalItems = data.datos.length;
+    let marcadoresCreados = 0;
+    let recursosSinCoordenadas = 0;
     
     console.log(`Procesando ${totalItems} recursos en lotes de ${batchSize}...`);
     
@@ -807,7 +964,11 @@ async function loadRecursosData(data) {
         const batch = data.datos.slice(i, i + batchSize);
         
         batch.forEach(recurso => {
-            if (recurso.PuntoX && recurso.PuntoY) {
+            // Verificar que las coordenadas existan y sean válidas
+            if (recurso.PuntoX != null && recurso.PuntoY != null && 
+                !isNaN(recurso.PuntoX) && !isNaN(recurso.PuntoY) &&
+                recurso.PuntoX !== 0 && recurso.PuntoY !== 0) {
+                
                 // Lógica de colores: Rojo si tiene incidencias, Naranja si tiene campañas, Verde si no tiene nada
                 let color = '#44ff44'; // Verde por defecto
                 if (recurso.tiene_incidencia && recurso.total_incidencias > 0) {
@@ -816,20 +977,49 @@ async function loadRecursosData(data) {
                     color = '#ff8800'; // Naranja si tiene campañas pero no incidencias
                 }
                 
-                const marker = L.circleMarker([recurso.PuntoY, recurso.PuntoX], {
-                    radius: 8,
-                    fillColor: color,
-                    color: '#fff',
-                    weight: 2,
-                    opacity: 1,
-                    fillOpacity: 0.8
-                });
-            
-            // Usar función común para crear el popup
-            crearPopupRecurso(marker, recurso);
-            
-            recursosLayer.addLayer(marker);
-        }
+                try {
+                    // Validar coordenadas antes de crear el marcador
+                    const lat = parseFloat(recurso.PuntoY);
+                    const lng = parseFloat(recurso.PuntoX);
+                    
+                    if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+                        console.warn(`Coordenadas inválidas para recurso ${recurso.No_}: (${recurso.PuntoY}, ${recurso.PuntoX})`);
+                        recursosSinCoordenadas++;
+                        return;
+                    }
+                    
+                    // Obtener el tipo de recurso
+                    const tipoRecurso = recurso['Tipo Recurso'] || recurso['TipoRecurso'] || '';
+                    
+                    // Log para los primeros marcadores para verificar qué tipos se están recibiendo
+                    if (marcadoresCreados < 5) {
+                        console.log(`🔍 Recurso ${recurso.No_}: Tipo original="${recurso['Tipo Recurso']}", Tipo usado="${tipoRecurso}"`);
+                    }
+                    
+                    // Obtener el icono según el tipo de recurso
+                    const icono = getIconoPorTipoRecurso(tipoRecurso, color);
+                    
+                    // Crear marcador con icono personalizado
+                    const marker = L.marker([lat, lng], {
+                        icon: icono
+                    });
+                
+                    // Usar función común para crear el popup
+                    crearPopupRecurso(marker, recurso);
+                    
+                    recursosLayer.addLayer(marker);
+                    marcadoresCreados++;
+                    
+                    // Mostrar coordenadas de los primeros 3 marcadores para verificación
+                    if (marcadoresCreados <= 3) {
+                        const markerLatLng = marker.getLatLng();
+                        console.log(`Marcador ${marcadoresCreados} creado en: (${markerLatLng.lat}, ${markerLatLng.lng}) - Recurso: ${recurso.No_}, Tipo: "${tipoRecurso}"`);
+                    }
+                } catch (error) {
+                    console.error(`Error creando marcador para recurso ${recurso.No_}:`, error);
+                    recursosSinCoordenadas++;
+                }
+            }
         });
         
         // Mostrar progreso
@@ -849,8 +1039,286 @@ async function loadRecursosData(data) {
         }
     }
     
-    console.log('Recursos cargados completamente');
-    recursosLayer.addTo(map);
+    console.log(`Recursos cargados completamente: ${marcadoresCreados} marcadores creados, ${recursosSinCoordenadas} sin coordenadas válidas`);
+    
+    // Verificar que hay marcadores antes de añadir al mapa
+    const totalMarcadores = recursosLayer.getLayers().length;
+    console.log(`Total de marcadores en el layer: ${totalMarcadores}`);
+    
+    // Mostrar coordenadas de algunos marcadores de ejemplo para verificación
+    if (totalMarcadores > 0) {
+        const sampleMarkers = [];
+        recursosLayer.eachLayer(function(layer, index) {
+            if (index < 3 && layer.getLatLng && typeof layer.getLatLng === 'function') {
+                const latLng = layer.getLatLng();
+                sampleMarkers.push(`Marcador ${index + 1}: (${latLng.lat}, ${latLng.lng})`);
+            }
+        });
+        if (sampleMarkers.length > 0) {
+            console.log('Coordenadas de ejemplo:', sampleMarkers.join(', '));
+        }
+    }
+    
+    if (totalMarcadores > 0) {
+        // Añadir el layer al mapa usando addLayer para mayor control
+        if (!map.hasLayer(recursosLayer)) {
+            map.addLayer(recursosLayer);
+            console.log('✅ Capa de recursos añadida al mapa con addLayer()');
+        } else {
+            console.log('⚠️ El layer ya estaba en el mapa');
+        }
+        
+        // Forzar actualización del mapa
+        map.invalidateSize();
+        
+        // Pequeño delay para asegurar que el layer se renderice
+        await new Promise(resolve => setTimeout(resolve, 100));
+        
+        // Ajustar vista del mapa para mostrar todos los recursos
+        try {
+            const bounds = L.latLngBounds();
+            let boundsCount = 0;
+            let invalidCoords = 0;
+            
+            // Función helper para validar coordenadas
+            function isValidCoordinate(lat, lng) {
+                return lat != null && lng != null && 
+                       !isNaN(lat) && !isNaN(lng) &&
+                       lat >= -90 && lat <= 90 &&
+                       lng >= -180 && lng <= 180;
+            }
+            
+            recursosLayer.eachLayer(function(layer) {
+                // Para markers y circleMarkers, usar getLatLng()
+                if (layer instanceof L.Marker || layer instanceof L.CircleMarker || (layer.getLatLng && typeof layer.getLatLng === 'function')) {
+                    const latLng = layer.getLatLng();
+                    if (latLng) {
+                        const lat = typeof latLng.lat === 'function' ? latLng.lat() : latLng.lat;
+                        const lng = typeof latLng.lng === 'function' ? latLng.lng() : latLng.lng;
+                        
+                        if (isValidCoordinate(lat, lng)) {
+                            bounds.extend([lat, lng]);
+                            boundsCount++;
+                        } else {
+                            invalidCoords++;
+                            if (invalidCoords <= 5) {
+                                console.warn(`Coordenada inválida ignorada: (${lat}, ${lng})`);
+                            }
+                        }
+                    }
+                } else if (layer.getLatLngs && typeof layer.getLatLngs === 'function') {
+                    // Para polígonos y otras formas
+                    const latLngs = layer.getLatLngs();
+                    if (Array.isArray(latLngs)) {
+                        latLngs.forEach(latLng => {
+                            const lat = typeof latLng.lat === 'function' ? latLng.lat() : (latLng.lat || latLng[0]);
+                            const lng = typeof latLng.lng === 'function' ? latLng.lng() : (latLng.lng || latLng[1]);
+                            if (isValidCoordinate(lat, lng)) {
+                                bounds.extend([lat, lng]);
+                            }
+                        });
+                    } else if (latLngs) {
+                        const lat = typeof latLngs.lat === 'function' ? latLngs.lat() : latLngs.lat;
+                        const lng = typeof latLngs.lng === 'function' ? latLngs.lng() : latLngs.lng;
+                        if (isValidCoordinate(lat, lng)) {
+                            bounds.extend([lat, lng]);
+                        }
+                    }
+                }
+            });
+            
+            console.log(`Bounds extendidos con ${boundsCount} marcadores válidos, ${invalidCoords} inválidos ignorados`);
+            
+            if (bounds.isValid() && boundsCount > 0) {
+                const sw = bounds.getSouthWest();
+                const ne = bounds.getNorthEast();
+                console.log(`Bounds válidos: SW(${sw.lat.toFixed(6)}, ${sw.lng.toFixed(6)}), NE(${ne.lat.toFixed(6)}, ${ne.lng.toFixed(6)})`);
+                
+                map.fitBounds(bounds, { padding: [50, 50] });
+                console.log('✅ Vista del mapa ajustada a los recursos');
+                
+                // Esperar a que el ajuste de vista se complete
+                await new Promise(resolve => setTimeout(resolve, 200));
+                
+                // Verificar y re-añadir el layer si es necesario después del fitBounds
+                if (!map.hasLayer(recursosLayer)) {
+                    console.warn('⚠️ Layer desapareció después de fitBounds, re-añadiendo...');
+                    map.addLayer(recursosLayer);
+                    map.invalidateSize();
+                }
+            } else {
+                console.warn('⚠️ Los bounds no son válidos o no hay marcadores con coordenadas');
+                // Construir bounds manualmente iterando sobre los layers
+                try {
+                    const manualBounds = L.latLngBounds();
+                    let validCount = 0;
+                    
+                    function isValidCoordinate(lat, lng) {
+                        return lat != null && lng != null && 
+                               !isNaN(lat) && !isNaN(lng) &&
+                               lat >= -90 && lat <= 90 &&
+                               lng >= -180 && lng <= 180;
+                    }
+                    
+                    recursosLayer.eachLayer(function(layer) {
+                        if (layer instanceof L.Marker || layer instanceof L.CircleMarker || (layer.getLatLng && typeof layer.getLatLng === 'function')) {
+                            const latLng = layer.getLatLng();
+                            if (latLng) {
+                                const lat = typeof latLng.lat === 'function' ? latLng.lat() : latLng.lat;
+                                const lng = typeof latLng.lng === 'function' ? latLng.lng() : latLng.lng;
+                                
+                                if (isValidCoordinate(lat, lng)) {
+                                    manualBounds.extend([lat, lng]);
+                                    validCount++;
+                                }
+                            }
+                        }
+                    });
+                    
+                    if (manualBounds.isValid() && validCount > 0) {
+                        const sw = manualBounds.getSouthWest();
+                        const ne = manualBounds.getNorthEast();
+                        console.log(`Usando bounds manuales: SW(${sw.lat.toFixed(6)}, ${sw.lng.toFixed(6)}), NE(${ne.lat.toFixed(6)}, ${ne.lng.toFixed(6)})`);
+                        map.fitBounds(manualBounds, { padding: [50, 50] });
+                        console.log('✅ Vista del mapa ajustada usando bounds manuales');
+                    } else {
+                        console.warn('⚠️ No se pudieron construir bounds válidos');
+                        // Como último recurso, hacer zoom a un nivel razonable
+                        map.setView([39.5696, 2.6502], 10); // Coordenadas aproximadas de Baleares
+                        console.log('✅ Vista del mapa ajustada a coordenadas por defecto');
+                    }
+                } catch (boundsError) {
+                    console.error('Error construyendo bounds manuales:', boundsError);
+                    // Como último recurso, hacer zoom a un nivel razonable
+                    map.setView([39.5696, 2.6502], 10);
+                    console.log('✅ Vista del mapa ajustada a coordenadas por defecto (fallback)');
+                }
+            }
+        } catch (error) {
+            console.error('Error ajustando vista del mapa:', error);
+            // Como último recurso, hacer zoom a un nivel razonable
+            try {
+                map.setView([39.5696, 2.6502], 10);
+                console.log('✅ Vista del mapa ajustada a coordenadas por defecto (error handler)');
+            } catch (fallbackError) {
+                console.error('Error en fallback de vista:', fallbackError);
+            }
+        }
+        
+        // Verificación final: asegurar que el layer está en el mapa
+        await new Promise(resolve => setTimeout(resolve, 100));
+        const layersInMap = map.hasLayer(recursosLayer);
+        const totalLayers = recursosLayer.getLayers().length;
+        console.log(`Verificación final: Layer está en el mapa: ${layersInMap}, Total marcadores: ${totalLayers}`);
+        
+        if (!layersInMap) {
+            console.error('❌ El layer no se añadió correctamente al mapa, intentando de nuevo...');
+            map.addLayer(recursosLayer);
+            map.invalidateSize();
+            
+            // Verificar de nuevo después de re-añadir
+            await new Promise(resolve => setTimeout(resolve, 100));
+            const stillInMap = map.hasLayer(recursosLayer);
+            console.log(`Verificación después de re-añadir: Layer está en el mapa: ${stillInMap}`);
+            
+            if (!stillInMap) {
+                console.error('❌❌ CRÍTICO: El layer no se puede mantener en el mapa');
+            }
+        } else {
+            console.log('✅✅ Layer confirmado en el mapa con', totalLayers, 'marcadores');
+            
+            // Verificar que el zoom sea razonable (no demasiado alejado)
+            const currentZoom = map.getZoom();
+            const center = map.getCenter();
+            console.log(`Zoom actual: ${currentZoom}, Centro: (${center.lat}, ${center.lng})`);
+            
+            // Si el zoom es muy bajo (< 5), ajustarlo a un nivel más razonable
+            if (currentZoom < 5) {
+                console.warn('⚠️ Zoom muy bajo, ajustando a nivel 8');
+                map.setZoom(8);
+            }
+            
+            // Verificar que al menos algunos marcadores estén en la vista actual
+            const mapBounds = map.getBounds();
+            let visibleMarkers = 0;
+            recursosLayer.eachLayer(function(layer) {
+                if (layer instanceof L.Marker || layer instanceof L.CircleMarker || (layer.getLatLng && typeof layer.getLatLng === 'function')) {
+                    const latLng = layer.getLatLng();
+                    if (latLng && mapBounds.contains(latLng)) {
+                        visibleMarkers++;
+                    }
+                }
+            });
+            console.log(`Marcadores visibles en la vista actual: ${visibleMarkers} de ${totalLayers}`);
+            
+            if (visibleMarkers === 0 && totalLayers > 0) {
+                console.warn('⚠️ Ningún marcador está visible en la vista actual, ajustando zoom...');
+                // Construir bounds manualmente
+                try {
+                    const layerBounds = L.latLngBounds();
+                    let validCount = 0;
+                    
+                    function isValidCoordinate(lat, lng) {
+                        return lat != null && lng != null && 
+                               !isNaN(lat) && !isNaN(lng) &&
+                               lat >= -90 && lat <= 90 &&
+                               lng >= -180 && lng <= 180;
+                    }
+                    
+                    recursosLayer.eachLayer(function(layer) {
+                        if (layer instanceof L.Marker || layer instanceof L.CircleMarker || (layer.getLatLng && typeof layer.getLatLng === 'function')) {
+                            const latLng = layer.getLatLng();
+                            if (latLng) {
+                                const lat = typeof latLng.lat === 'function' ? latLng.lat() : latLng.lat;
+                                const lng = typeof latLng.lng === 'function' ? latLng.lng() : latLng.lng;
+                                
+                                if (isValidCoordinate(lat, lng)) {
+                                    layerBounds.extend([lat, lng]);
+                                    validCount++;
+                                }
+                            }
+                        }
+                    });
+                    
+                    if (layerBounds.isValid() && validCount > 0) {
+                        map.fitBounds(layerBounds, { padding: [50, 50], maxZoom: 15 });
+                        console.log('✅ Vista re-ajustada usando bounds manuales');
+                    } else {
+                        console.warn('⚠️ No se pudieron construir bounds para re-ajuste');
+                    }
+                } catch (error) {
+                    console.error('Error re-ajustando vista:', error);
+                }
+            }
+        }
+        
+        // Monitor temporal para detectar si el layer desaparece
+        let monitorCount = 0;
+        const monitorInterval = setInterval(() => {
+            monitorCount++;
+            const isInMap = map.hasLayer(recursosLayer);
+            const markerCount = recursosLayer ? recursosLayer.getLayers().length : 0;
+            
+            if (!isInMap && markerCount > 0) {
+                console.error(`🚨 ALERTA: Layer desapareció después de ${monitorCount * 500}ms! Re-añadiendo...`);
+                map.addLayer(recursosLayer);
+                map.invalidateSize();
+            }
+            
+            // Detener el monitor después de 10 segundos
+            if (monitorCount >= 20) {
+                clearInterval(monitorInterval);
+                console.log('Monitor de layer detenido');
+            }
+        }, 500);
+    } else {
+        console.warn('⚠️ No se crearon marcadores, no se añadirá nada al mapa');
+        const statusDiv = document.getElementById('status');
+        if (statusDiv) {
+            statusDiv.textContent = '⚠️ No se encontraron recursos con coordenadas válidas';
+            statusDiv.className = 'status error';
+        }
+    }
     
     // Actualizar contador de seleccionados
     updateContadorSeleccionados();
@@ -984,6 +1452,10 @@ async function loadMobiliarioData(data) {
                     const data = await response.json();
                     console.log(`📊 Datos de incidencias recibidos:`, data);
                     
+                    // Obtener las incidencias de la respuesta (puede estar en data.incidencias o data.datos)
+                    const incidencias = data.incidencias || data.datos || [];
+                    const totalIncidencias = data.total_incidencias || incidencias.length || 0;
+                    
                     let tooltipContent = `
                         <div style="max-width: 400px; max-height: 500px; overflow-y: auto; padding: 5px;">
                             <h4>🪑 Mobiliario: ${mobiliario.Descripción || 'Sin descripción'}</h4>
@@ -994,7 +1466,7 @@ async function loadMobiliarioData(data) {
                             ${mobiliario.geocodificado ? '<p><strong>📍 Ubicación:</strong> <em>Geocodificada desde dirección de Mallorca</em></p>' : ''}
                             ${mobiliario.Dirección ? `<p><strong>Dirección (Mallorca):</strong> ${mobiliario.Dirección}</p>` : ''}
                             <p><strong>Estado:</strong> ${mobiliario.tiene_incidencia ? '⚠️ Con incidencias' : '✅ Sin incidencias'}</p>
-                            <p><strong>Total incidencias:</strong> ${data.total_incidencias || 0}</p>
+                            <p><strong>Total incidencias:</strong> ${totalIncidencias}</p>
                             
                     <!-- Mapa de Ubicación -->
                     <div style="margin: 10px 0; text-align: center;">
@@ -1059,12 +1531,12 @@ async function loadMobiliarioData(data) {
                         tooltipContent += `<p><strong>Zona Limpieza:</strong> ${mobiliario['Zona Limpieza']}</p>`;
                     }
                     
-                    if (dataDetalles.incidencias && dataDetalles.incidencias.length > 0) {
-                        tooltipContent += `<h5>🚨 Incidencias (${dataDetalles.incidencias.length}):</h5>`;
+                    if (incidencias && incidencias.length > 0) {
+                        tooltipContent += `<h5>🚨 Incidencias (${incidencias.length}):</h5>`;
                         
                         // Agrupar incidencias por tipo
                         const incidenciasPorTipo = {};
-                        dataDetalles.incidencias.forEach(incidencia => {
+                        incidencias.forEach(incidencia => {
                             const tipo = incidencia.Tipo || 'Sin tipo';
                             if (!incidenciasPorTipo[tipo]) {
                                 incidenciasPorTipo[tipo] = [];
@@ -1161,9 +1633,47 @@ async function loadRecursos() {
         if (fechaDesde) params.append('fecha_desde', fechaDesde);
         if (fechaHasta) params.append('fecha_hasta', fechaHasta);
         
+        // Añadir tipos de recurso seleccionados
+        const tiposRecursoSelect = document.getElementById('tiposRecurso');
+        if (tiposRecursoSelect) {
+            const selectedTipos = Array.from(tiposRecursoSelect.selectedOptions)
+                .map(option => option.value)
+                .filter(value => value && value.trim() !== '');
+            if (selectedTipos.length > 0) {
+                params.append('tipos_recurso', selectedTipos.join(','));
+                console.log(`📋 Filtro tipos de recurso: ${selectedTipos.join(', ')}`);
+            }
+        }
+        
+        // Añadir empresas seleccionadas
+        const empresasSelect = document.getElementById('empresas');
+        if (empresasSelect) {
+            const selectedEmpresas = Array.from(empresasSelect.selectedOptions)
+                .map(option => option.value)
+                .filter(value => value && value.trim() !== '');
+            if (selectedEmpresas.length > 0) {
+                params.append('empresas', selectedEmpresas.join(','));
+                console.log(`🏢 Filtro empresas: ${selectedEmpresas.join(', ')}`);
+            }
+        }
+        
+        // Añadir familias seleccionadas
+        const familiasSelect = document.getElementById('familias');
+        if (familiasSelect) {
+            const selectedFamilias = Array.from(familiasSelect.selectedOptions)
+                .map(option => option.value)
+                .filter(value => value && value.trim() !== '');
+            if (selectedFamilias.length > 0) {
+                params.append('familias', selectedFamilias.join(','));
+                console.log(`👨‍👩‍👧 Filtro familias: ${selectedFamilias.join(', ')}`);
+            }
+        }
+        
         if (params.toString()) {
             url += '?' + params.toString();
         }
+        
+        console.log(`🔗 URL de petición: ${url}`);
         
         const response = await fetch(url);
         
@@ -1179,38 +1689,37 @@ async function loadRecursos() {
         
         // Limpiar capa de recursos anterior
         if (recursosLayer) {
-            map.removeLayer(recursosLayer);
+            try {
+                if (map.hasLayer(recursosLayer)) {
+                    map.removeLayer(recursosLayer);
+                    console.log('✅ Capa de recursos anterior eliminada del mapa');
+                }
+                // Limpiar todos los layers del grupo anterior (pero no eliminar la referencia)
+                const oldLayer = recursosLayer;
+                oldLayer.clearLayers();
+                console.log('✅ Layers del grupo anterior limpiados');
+            } catch (error) {
+                console.warn('Error removiendo capa de recursos anterior:', error);
+            }
         }
         
         // Mostrar datos en consola y en el mapa
         console.log('Datos de RecursosGis:', data);
         
-        // Cargar datos de recursos
+        // Cargar datos de recursos (esta función ya añade el layer al mapa y ajusta la vista)
         await loadRecursosData(data);
         
-        // Ajustar vista del mapa para mostrar todos los recursos
-        if (data.datos.length > 0) {
-            const bounds = L.latLngBounds();
-            recursosLayer.eachLayer(function(layer) {
-                if (layer.getLatLng && typeof layer.getLatLng === 'function') {
-                    bounds.extend(layer.getLatLng());
-                } else if (layer.getLatLngs && typeof layer.getLatLngs === 'function') {
-                    // Para círculos y otras formas
-                    const latLngs = layer.getLatLngs();
-                    if (Array.isArray(latLngs)) {
-                        latLngs.forEach(latLng => bounds.extend(latLng));
-                    } else {
-                        bounds.extend(latLngs);
-                    }
-                }
-            });
-            if (bounds.isValid()) {
-                map.fitBounds(bounds.pad(0.1));
-            }
-        }
+        // Verificar que los recursos se cargaron correctamente
+        const totalMarcadores = recursosLayer ? recursosLayer.getLayers().length : 0;
+        console.log(`Verificación final: ${totalMarcadores} marcadores en el layer de recursos`);
         
-        statusDiv.textContent = `✓ Cargados ${data.total_registros} recursos`;
-        statusDiv.className = 'status success';
+        if (totalMarcadores > 0) {
+            statusDiv.textContent = `✓ Cargados ${data.total_registros} recursos (${totalMarcadores} visibles en el mapa)`;
+            statusDiv.className = 'status success';
+        } else {
+            statusDiv.textContent = `⚠ Cargados ${data.total_registros} recursos, pero ninguno tiene coordenadas válidas`;
+            statusDiv.className = 'status error';
+        }
         
     } catch (error) {
         console.error('Error al cargar recursos:', error);

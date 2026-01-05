@@ -262,6 +262,22 @@ footer {
 }
 
 /* Estilos para iconos de mobiliario (paradas de autobús) */
+/* Estilos para iconos de recursos personalizados */
+.custom-recurso-icon {
+    background: transparent !important;
+    border: none !important;
+}
+
+.custom-recurso-icon div {
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.custom-recurso-icon div:hover {
+    transform: scale(1.2);
+    box-shadow: 0 4px 8px rgba(0,0,0,0.4) !important;
+    z-index: 1000;
+}
+
 .custom-bus-icon {
     background: transparent !important;
     border: none !important;
