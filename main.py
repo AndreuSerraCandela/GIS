@@ -15,6 +15,13 @@ import math
 from datetime import datetime, date
 from config.database import get_db_connection
 from config.api_keys import GEOCODING_SERVICES, SEARCH_CONFIG
+from config.bc_incidencias import INCIDENCIAS_URL, BC_CONFIG
+from incidencias_bc import (
+    get_device_session,
+    get_gtask_user_id_from_session,
+    get_open_incidences_for_resource,
+    bc_post_json_text,
+)
 import pandas as pd
 from io import BytesIO
 import base64
@@ -51,6 +58,77 @@ def get_fechas():
     fecha_hasta = fecha_hasta if fecha_hasta else fecha_hoy
     
     return fecha_desde, fecha_hasta
+
+
+def _parse_fecha_campanas(valor):
+    """Convierte YYYY-MM-DD a date o None."""
+    if not valor:
+        return None
+    try:
+        return datetime.strptime(str(valor).strip(), '%Y-%m-%d').date()
+    except ValueError:
+        return None
+
+
+def _fechas_campanas_desde_request():
+    """Fechas para filtrar campañas (usa get_fechas() si no vienen en la petición)."""
+    fecha_desde_str = request.args.get('fecha_desde', '')
+    fecha_hasta_str = request.args.get('fecha_hasta', '')
+    if fecha_desde_str or fecha_hasta_str:
+        fecha_desde = _parse_fecha_campanas(fecha_desde_str)
+        fecha_hasta = _parse_fecha_campanas(fecha_hasta_str)
+        if fecha_desde_str and fecha_desde is None:
+            raise ValueError(f"Formato de fecha_desde inválido: {fecha_desde_str}")
+        if fecha_hasta_str and fecha_hasta is None:
+            raise ValueError(f"Formato de fecha_hasta inválido: {fecha_hasta_str}")
+        return fecha_desde, fecha_hasta
+    desde, hasta = get_fechas()
+    return _parse_fecha_campanas(desde), _parse_fecha_campanas(hasta)
+
+
+def _query_campanas_filtradas(cursor, no_recurso='', empresa='', fecha_desde=None, fecha_hasta=None):
+    """
+    Consulta campañas en [dbo].[Campañas] filtradas por recurso y periodo.
+    Periodo: campaña activa si Fin >= fecha_desde e Inicio <= fecha_hasta.
+    """
+    query = """
+        SELECT DISTINCT
+            [Empresa],
+            [Campaña],
+            [Inicio],
+            [Fin],
+            [Cliente],
+            [Nº Recurso]
+        FROM [dbo].[Campañas]
+    """
+    params = []
+    where_clauses = []
+
+    if no_recurso:
+        where_clauses.append("[Nº Recurso] = ?")
+        params.append(no_recurso)
+
+    if fecha_desde:
+        where_clauses.append("[Fin] >= ?")
+        params.append(fecha_desde)
+
+    if fecha_hasta:
+        where_clauses.append("[Inicio] <= ?")
+        params.append(fecha_hasta)
+
+    if empresa:
+        where_clauses.append("Empresa = ?")
+        params.append(empresa)
+
+    if where_clauses:
+        query += " WHERE " + " AND ".join(where_clauses)
+
+    query += " ORDER BY [Inicio] DESC"
+    cursor.execute(query, params)
+    results = cursor.fetchall()
+    columns = [column[0] for column in cursor.description]
+    return [clean_data(dict(zip(columns, row))) for row in results]
+
 
 def calcular_distancia_haversine(lat1, lon1, lat2, lon2):
     """
@@ -230,6 +308,103 @@ def obtener_tipos_lugares_soportados():
         'city_hall': 'Ayuntamientos'
     }
 
+def _baleares_bounds():
+    return SEARCH_CONFIG.get('baleares_bounds', {
+        'lat_min': 38.62, 'lat_max': 40.12, 'lon_min': 1.10, 'lon_max': 4.42,
+    })
+
+
+def _coordenada_en_baleares(lat, lon):
+    """Comprueba si unas coordenadas caen dentro del rectángulo de las Baleares."""
+    if lat is None or lon is None:
+        return False
+    b = _baleares_bounds()
+    return (
+        b['lat_min'] <= float(lat) <= b['lat_max']
+        and b['lon_min'] <= float(lon) <= b['lon_max']
+    )
+
+
+def _texto_indica_baleares(*textos):
+    terms = SEARCH_CONFIG.get('baleares_terms') or ()
+    blob = ' '.join(str(t) for t in textos if t).lower()
+    return any(term in blob for term in terms)
+
+
+def _resultado_google_en_baleares(result):
+    """Filtra resultados de Google Geocoding: solo Islas Baleares."""
+    location = result.get('geometry', {}).get('location', {})
+    lat = location.get('lat')
+    lon = location.get('lng')
+    if not _coordenada_en_baleares(lat, lon):
+        return False
+
+    componentes = result.get('address_components') or []
+    nombres = [result.get('formatted_address', '')]
+    for comp in componentes:
+        nombres.append(comp.get('long_name', ''))
+        nombres.append(comp.get('short_name', ''))
+
+    if _texto_indica_baleares(*nombres):
+        return True
+
+    # Dentro del bbox insular: aceptar (evita falsos positivos en península por lon)
+    return True
+
+
+def geocodificar_direccion_opciones(direccion, max_results=10):
+    """
+    Geocodifica una dirección y devuelve opciones dentro de las Islas Baleares.
+
+    Returns:
+        list: [{direccion, lat, lon}, ...]
+    """
+    try:
+        if not direccion or not str(direccion).strip():
+            return []
+
+        if not GEOCODING_SERVICES['google_maps']['api_key']:
+            print("API key de Google Maps no configurada")
+            return []
+
+        b = _baleares_bounds()
+        admin_area = SEARCH_CONFIG.get('baleares_admin_area', 'Illes Balears')
+        url = "https://maps.googleapis.com/maps/api/geocode/json"
+        params = {
+            'address': direccion.strip(),
+            'key': GEOCODING_SERVICES['google_maps']['api_key'],
+            'region': 'es',
+            'components': f"country:ES|administrative_area:{admin_area}",
+            'bounds': f"{b['lat_min']},{b['lon_min']}|{b['lat_max']},{b['lon_max']}",
+        }
+
+        response = requests.get(url, params=params, timeout=SEARCH_CONFIG.get('timeout', 10))
+        if response.status_code != 200:
+            return []
+
+        data = response.json()
+        if data.get('status') != 'OK' or not data.get('results'):
+            return []
+
+        opciones = []
+        for result in data['results']:
+            if not _resultado_google_en_baleares(result):
+                continue
+            location = result['geometry']['location']
+            opciones.append({
+                'direccion': result.get('formatted_address', direccion),
+                'lat': location['lat'],
+                'lon': location['lng'],
+            })
+            if len(opciones) >= max_results:
+                break
+        return opciones
+
+    except Exception as e:
+        print(f"Error al geocodificar dirección (opciones): {e}")
+        return []
+
+
 def geocodificar_direccion(direccion):
     """
     Geocodifica una dirección usando Google Maps API
@@ -240,53 +415,10 @@ def geocodificar_direccion(direccion):
     Returns:
         tuple: (lat, lon) o (None, None) si no se encuentra
     """
-    try:
-        print(f"Geocodificando dirección: {direccion}")
-        
-        # Verificar si la API key está disponible
-        if not GEOCODING_SERVICES['google_maps']['api_key']:
-            print("API key de Google Maps no configurada")
-            return None, None
-        
-        url = "https://maps.googleapis.com/maps/api/geocode/json"
-        params = {
-            'address': direccion,
-            'key': GEOCODING_SERVICES['google_maps']['api_key'],
-            'region': 'es',
-            'components': 'country:ES'
-        }
-        
-        print(f"URL de geocodificación: {url}")
-        print(f"Parámetros: {params}")
-        
-        response = requests.get(url, params=params, timeout=10)
-        print(f"Respuesta HTTP: {response.status_code}")
-        
-        if response.status_code == 200:
-            data = response.json()
-            print(f"Respuesta de la API: {data}")
-            
-            if data['status'] == 'OK' and data['results']:
-                location = data['results'][0]['geometry']['location']
-                lat = location['lat']
-                lon = location['lng']
-                print(f"Coordenadas encontradas: {lat}, {lon}")
-                return lat, lon
-            else:
-                print(f"Error en geocodificación: {data.get('status', 'Unknown error')}")
-                if 'error_message' in data:
-                    print(f"Mensaje de error: {data['error_message']}")
-        else:
-            print(f"Error HTTP: {response.status_code}")
-            print(f"Respuesta: {response.text}")
-        
-        return None, None
-        
-    except Exception as e:
-        print(f"Error al geocodificar dirección: {e}")
-        import traceback
-        print(f"Traceback: {traceback.format_exc()}")
-        return None, None
+    opciones = geocodificar_direccion_opciones(direccion, max_results=1)
+    if opciones:
+        return opciones[0]['lat'], opciones[0]['lon']
+    return None, None
 
 def geocode_with_google_maps(parada, description, address):
     """
@@ -709,7 +841,7 @@ app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 @app.route('/')
 def index():
     """Página principal de la aplicación GIS"""
-    return render_template('index.html')
+    return render_template('index.html', incidencias_url=INCIDENCIAS_URL)
 
 @app.route('/api/geodata')
 def get_geo_data():
@@ -812,101 +944,43 @@ def get_incidencias():
 @app.route('/api/campanas')
 def get_campanas():
     """API endpoint para obtener datos de Campañas con filtros opcionales"""
+    conn = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        
-        # Obtener parámetros de filtro
-        no_recurso = request.args.get('no_recurso', '')
-        fecha_desde_str = request.args.get('fecha_desde', '')
-        fecha_hasta_str = request.args.get('fecha_hasta', '')
-        empresa = request.args.get('empresa', '')
-        
-        # Validar y convertir fechas
-        fecha_desde = None
-        fecha_hasta = None
-        
-        if fecha_desde_str:
-            try:
-                fecha_desde = datetime.strptime(fecha_desde_str, '%Y-%m-%d').date()
-            except ValueError:
-                print(f"⚠️ Formato de fecha_desde inválido: {fecha_desde_str}")
-                return jsonify({"error": f"Formato de fecha_desde inválido: {fecha_desde_str}. Use formato YYYY-MM-DD"}), 400
-        
-        if fecha_hasta_str:
-            try:
-                fecha_hasta = datetime.strptime(fecha_hasta_str, '%Y-%m-%d').date()
-            except ValueError:
-                print(f"⚠️ Formato de fecha_hasta inválido: {fecha_hasta_str}")
-                return jsonify({"error": f"Formato de fecha_hasta inválido: {fecha_hasta_str}. Use formato YYYY-MM-DD"}), 400
-        
-        # Construir la consulta base
-        query = """
-        SELECT Distinct
-        [Empresa],
-            [Campaña],
-            [Inicio],
-            [Fin],
-            [Cliente],
-            [Nº Recurso]
-            FROM [dbo].[Campañas]
-        """
-        
-        params = []
-        where_clauses = []
-        
-        # Añadir filtros si se proporcionan
-        if no_recurso:
-            where_clauses.append("[Nº Recurso] = ?")
-            params.append(no_recurso)
-        
-        if fecha_desde:
-            where_clauses.append("[Fin] >= ?")
-            params.append(fecha_desde)
-        
-        if fecha_hasta:
-            where_clauses.append("[Inicio] <= ?")
-            params.append(fecha_hasta)
-        
-        if empresa:
-            where_clauses.append("Empresa = ?")
-            params.append(empresa)
-        
-        # Añadir WHERE si hay filtros
-        if where_clauses:
-            query += " WHERE " + " AND ".join(where_clauses)
-        
-        query += " ORDER BY [Inicio] DESC"
-        
-        print(f"📊 Query de campañas: {query}")
-        print(f"📊 Parámetros: {params}")
-        
-        cursor.execute(query, params)
-        results = cursor.fetchall()
-        
-        # Obtener nombres de columnas
-        columns = [column[0] for column in cursor.description]
-        
-        # Convertir a lista de diccionarios
-        data = []
-        for row in results:
-            row_dict = dict(zip(columns, row))
-            data.append(clean_data(row_dict))
-        
-        cursor.close()
-        conn.close()
-        
+
+        no_recurso = (request.args.get('no_recurso') or '').strip()
+        empresa = (request.args.get('empresa') or '').strip()
+
+        try:
+            fecha_desde, fecha_hasta = _fechas_campanas_desde_request()
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
+        data = _query_campanas_filtradas(
+            cursor, no_recurso=no_recurso, empresa=empresa,
+            fecha_desde=fecha_desde, fecha_hasta=fecha_hasta,
+        )
+
         return jsonify({
             "vista": "Campañas",
             "total_registros": len(data),
-            "datos": data
+            "datos": data,
+            "fecha_desde": fecha_desde.isoformat() if fecha_desde else None,
+            "fecha_hasta": fecha_hasta.isoformat() if fecha_hasta else None,
         })
-        
+
     except Exception as e:
         print(f"❌ Error en endpoint /api/campanas: {e}")
         import traceback
         print(f"❌ Traceback completo: {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 @app.route('/api/tipos-recurso')
 def get_tipos_recurso():
@@ -1519,6 +1593,33 @@ def get_recursos_cerca_lugares():
         print(f"Error en endpoint /api/recursos-cerca-lugares: {e}")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/geocodificar-direccion')
+def api_geocodificar_direccion():
+    """Devuelve las opciones de geocodificación para una dirección (Google Maps)."""
+    try:
+        direccion = (request.args.get('direccion') or '').strip()
+        if not direccion:
+            return jsonify({'error': 'Se requiere el parámetro direccion'}), 400
+
+        opciones = geocodificar_direccion_opciones(direccion)
+        if not opciones:
+            return jsonify({
+                'error': 'No se encontró la dirección en las Islas Baleares',
+                'direccion': direccion,
+                'sugerencia': 'Indica una dirección de Mallorca, Menorca, Ibiza o Formentera'
+            }), 400
+
+        return jsonify({
+            'direccion_buscada': direccion,
+            'multiple': len(opciones) > 1,
+            'total': len(opciones),
+            'resultados': opciones,
+        })
+    except Exception as e:
+        print(f"Error en endpoint /api/geocodificar-direccion: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/recursos-cerca-direccion')
 def get_recursos_cerca_direccion():
     """API endpoint para obtener recursos cerca de una dirección específica"""
@@ -1536,17 +1637,29 @@ def get_recursos_cerca_direccion():
         if not radio_km or radio_km <= 0 or radio_km > 50:
             print(f"Error: Radio inválido: {radio_km}")
             return jsonify({"error": "Radio debe estar entre 0.1 y 50 km"}), 400
-        
-        # Geocodificar la dirección
-        print("Iniciando geocodificación...")
-        lat, lon = geocodificar_direccion(direccion)
+
+        lat = request.args.get('lat', type=float)
+        lon = request.args.get('lon', type=float)
+        direccion_formateada = request.args.get('direccion_formateada', '').strip()
+
+        if lat is not None and lon is not None:
+            if not _coordenada_en_baleares(lat, lon):
+                return jsonify({
+                    "error": "Las coordenadas deben estar dentro de las Islas Baleares",
+                    "direccion": direccion,
+                }), 400
+            print(f"Usando coordenadas proporcionadas: {lat}, {lon}")
+        else:
+            # Geocodificar la dirección (primera coincidencia)
+            print("Iniciando geocodificación...")
+            lat, lon = geocodificar_direccion(direccion)
         
         if not lat or not lon:
             print("Error: No se pudo geocodificar la dirección")
             return jsonify({
-                "error": "No se pudo geocodificar la dirección proporcionada",
+                "error": "No se encontró la dirección en las Islas Baleares",
                 "direccion": direccion,
-                "sugerencia": "Verifica que la dirección sea correcta y esté en España"
+                "sugerencia": "Indica una dirección de Mallorca, Menorca, Ibiza o Formentera"
             }), 400
         
         # Obtener todos los recursos de la base de datos
@@ -1625,6 +1738,7 @@ def get_recursos_cerca_direccion():
         return jsonify({
             "tipo_busqueda": "direccion",
             "direccion_buscada": direccion,
+            "direccion_formateada": direccion_formateada or direccion,
             "coordenadas_encontradas": {"lat": lat, "lon": lon},
             "radio_km": radio_km,
             "recursos_cerca": len(recursos_data),
@@ -1778,6 +1892,183 @@ def get_recursos_cerca_coordenadas():
     except Exception as e:
         print(f"Error en endpoint /api/recursos-cerca-coordenadas: {e}")
         return jsonify({"error": str(e)}), 500
+
+        return jsonify({"error": str(e)}), 500
+
+@app.route('/api/mobiliario-cerca-coordenadas')
+def get_mobiliario_cerca_coordenadas():
+    """Mobiliario (paradas) cerca de unas coordenadas."""
+    conn = None
+    try:
+        lat = request.args.get('lat', type=float)
+        lon = request.args.get('lon', type=float)
+        radio_km = request.args.get('radio', 5, type=float)
+        if not lat or not lon:
+            return jsonify({"error": "Se requieren parámetros lat y lon"}), 400
+        if not radio_km or radio_km <= 0 or radio_km > 50:
+            return jsonify({"error": "Radio debe estar entre 0.1 y 50 km"}), 400
+
+        fecha_desde, fecha_hasta = get_fechas()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        query = """
+        SELECT [Nº Emplazamiento], [Descripción], [Tipo], [Tipo Parada], [SAE],
+               [Zona Limpieza], [Operario], [PuntoX], [PuntoY], [Dirección], Incidencia
+        FROM [dbo].[MobiliarioPorFechas](?, ?)
+        WHERE [PuntoX] != 0 AND [PuntoY] != 0
+        """
+        cursor.execute(query, (fecha_desde, fecha_hasta))
+        columns = [c[0] for c in cursor.description]
+        mobiliario_data = []
+        for row in cursor.fetchall():
+            m = clean_data(dict(zip(columns, row)))
+            dist = calcular_distancia_haversine(lat, lon, m['PuntoY'], m['PuntoX'])
+            m['total_incidencias'] = m.get('Incidencia', 0)
+            m['tiene_incidencia'] = 1 if m['total_incidencias'] else 0
+            if dist <= radio_km:
+                m['distancia_km'] = round(dist, 2)
+                mobiliario_data.append(m)
+        mobiliario_data.sort(key=lambda x: x['distancia_km'])
+        return jsonify({
+            "tipo_busqueda": "mobiliario_coordenadas",
+            "coordenadas_referencia": {"lat": lat, "lon": lon},
+            "radio_km": radio_km,
+            "mobiliario_cerca": len(mobiliario_data),
+            "mobiliario": mobiliario_data,
+        })
+    except Exception as e:
+        print(f"Error en /api/mobiliario-cerca-coordenadas: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+@app.route('/api/mobiliario-cerca-direccion')
+def get_mobiliario_cerca_direccion():
+    """Mobiliario cerca de una dirección geocodificada."""
+    try:
+        direccion = (request.args.get('direccion') or '').strip()
+        radio_km = request.args.get('radio', 5, type=float)
+        if not direccion:
+            return jsonify({"error": "Se requiere el parámetro direccion"}), 400
+        if not radio_km or radio_km <= 0 or radio_km > 50:
+            return jsonify({"error": "Radio debe estar entre 0.1 y 50 km"}), 400
+
+        lat = request.args.get('lat', type=float)
+        lon = request.args.get('lon', type=float)
+        direccion_formateada = (request.args.get('direccion_formateada') or '').strip()
+
+        if lat is not None and lon is not None:
+            if not _coordenada_en_baleares(lat, lon):
+                return jsonify({"error": "Las coordenadas deben estar dentro de las Islas Baleares"}), 400
+        else:
+            lat, lon = geocodificar_direccion(direccion)
+        if not lat or not lon:
+            return jsonify({
+                "error": "No se encontró la dirección en las Islas Baleares",
+                "direccion": direccion,
+            }), 400
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        fecha_desde, fecha_hasta = get_fechas()
+        query = """
+        SELECT [Nº Emplazamiento], [Descripción], [Tipo], [Tipo Parada], [SAE],
+               [Zona Limpieza], [Operario], [PuntoX], [PuntoY], [Dirección], Incidencia
+        FROM [dbo].[MobiliarioPorFechas](?, ?)
+        WHERE [PuntoX] != 0 AND [PuntoY] != 0
+        """
+        cursor.execute(query, (fecha_desde, fecha_hasta))
+        columns = [c[0] for c in cursor.description]
+        mobiliario_data = []
+        for row in cursor.fetchall():
+            m = clean_data(dict(zip(columns, row)))
+            dist = calcular_distancia_haversine(lat, lon, m['PuntoY'], m['PuntoX'])
+            m['total_incidencias'] = m.get('Incidencia', 0)
+            m['tiene_incidencia'] = 1 if m['total_incidencias'] else 0
+            if dist <= radio_km:
+                m['distancia_km'] = round(dist, 2)
+                mobiliario_data.append(m)
+        mobiliario_data.sort(key=lambda x: x['distancia_km'])
+        conn.close()
+        return jsonify({
+            "tipo_busqueda": "mobiliario_direccion",
+            "direccion_buscada": direccion,
+            "direccion_formateada": direccion_formateada or direccion,
+            "coordenadas_encontradas": {"lat": lat, "lon": lon},
+            "radio_km": radio_km,
+            "mobiliario_cerca": len(mobiliario_data),
+            "mobiliario": mobiliario_data,
+        })
+    except Exception as e:
+        print(f"Error en /api/mobiliario-cerca-direccion: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/parada')
+def buscar_parada():
+    """Busca parada(s) por número de emplazamiento."""
+    conn = None
+    try:
+        numero = (request.args.get('numero') or '').strip()
+        if not numero:
+            return jsonify({"error": "Indique el número de parada"}), 400
+
+        fecha_desde, fecha_hasta = get_fechas()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        query = """
+        SELECT [Nº Emplazamiento], [Descripción], [Tipo], [Tipo Parada], [SAE],
+               [Zona Limpieza], [Operario], [PuntoX], [PuntoY], [Dirección], Incidencia
+        FROM [dbo].[MobiliarioPorFechas](?, ?)
+        WHERE CAST([Nº Emplazamiento] AS NVARCHAR(50)) = ?
+           OR CAST([Nº Emplazamiento] AS NVARCHAR(50)) LIKE ?
+        ORDER BY [Nº Emplazamiento]
+        """
+        like_num = f"%{numero}%"
+        cursor.execute(query, (fecha_desde, fecha_hasta, numero, like_num))
+        columns = [c[0] for c in cursor.description]
+        paradas = []
+        vistos = set()
+        for row in cursor.fetchall():
+            p = clean_data(dict(zip(columns, row)))
+            key = str(p.get('Nº Emplazamiento', ''))
+            if key in vistos:
+                continue
+            vistos.add(key)
+            p['total_incidencias'] = p.get('Incidencia', 0)
+            p['tiene_incidencia'] = 1 if p['total_incidencias'] else 0
+            paradas.append(p)
+
+        if not paradas:
+            return jsonify({
+                "error": "No se encontró ninguna parada con ese número",
+                "numero": numero,
+            }), 404
+
+        exactas = [p for p in paradas if str(p.get('Nº Emplazamiento', '')).strip() == numero]
+        resultados = exactas if exactas else paradas
+
+        return jsonify({
+            "numero_buscado": numero,
+            "multiple": len(resultados) > 1,
+            "total": len(resultados),
+            "paradas": resultados,
+        })
+    except Exception as e:
+        print(f"Error en /api/parada: {e}")
+        return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
 
 @app.route('/api/test-direccion')
 def test_direccion():
@@ -1961,36 +2252,20 @@ def get_recurso_detalles(recurso_id):
             incidencia = dict(zip(incidencias_columns, row))
             incidencias_data.append(clean_data(incidencia))
         
-        # Query para obtener campañas del recurso
-        campanas_query = """
-        SELECT 
-            Distinct
-            [Campaña],
-            [Inicio],
-            [Fin],
-            Max([Cliente]) as [Cliente]
-        FROM [dbo].[Campañas] 
-        WHERE [Nº Recurso] = ?
-        Group by [Campaña], [Inicio], [Fin]
-        ORDER BY [Inicio] DESC
-        """
+        # Campañas del recurso en el periodo seleccionado
+        try:
+            fecha_desde, fecha_hasta = _fechas_campanas_desde_request()
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
+        campanas_data = _query_campanas_filtradas(
+            cursor,
+            no_recurso=recurso_id,
+            fecha_desde=fecha_desde,
+            fecha_hasta=fecha_hasta,
+        )
         
-        print(f"📊 Ejecutando query de campañas: {campanas_query}")
-        print(f"📊 Con parámetro: {recurso_id}")
-        
-        cursor.execute(campanas_query, (recurso_id,))
-        campanas_results = cursor.fetchall()
-        
-        print(f"📊 Campañas encontradas: {len(campanas_results)}")
-        
-        # Obtener nombres de columnas de campañas
-        campanas_columns = [column[0] for column in cursor.description]
-        
-        # Convertir campañas a lista de diccionarios
-        campanas_data = []
-        for row in campanas_results:
-            campana = dict(zip(campanas_columns, row))
-            campanas_data.append(clean_data(campana))
+        print(f"📊 Campañas encontradas: {len(campanas_data)}")
         
         cursor.close()
         conn.close()
@@ -2108,6 +2383,123 @@ def get_file():
         import traceback
         print(f"❌ Traceback completo: {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
+
+@app.route('/api/incidencias-abiertas', methods=['POST'])
+def api_incidencias_abiertas():
+    """Incidencias abiertas del usuario GTask para parada o recurso (abrir ?id= en Incidencias)."""
+    data = request.get_json() or {}
+    parada = (data.get('parada') or '').strip()
+    recurso = (data.get('recurso') or '').strip()
+    resource_id = parada or recurso
+    if not resource_id:
+        return jsonify({'success': False, 'error': 'Indique parada o recurso'}), 400
+
+    sess = get_device_session()
+    gtask_user_id = get_gtask_user_id_from_session(sess)
+    if not gtask_user_id:
+        return jsonify({
+            'success': True,
+            'requires_login': True,
+            'incidencias': [],
+            'documentNo': '',
+        })
+
+    try:
+        incidencias = get_open_incidences_for_resource(resource_id, gtask_user_id)
+        document_no = incidencias[0]['documentNo'] if incidencias else ''
+        return jsonify({
+            'success': True,
+            'requires_login': False,
+            'incidencias': incidencias,
+            'documentNo': document_no,
+            'count': len(incidencias),
+        })
+    except requests.RequestException as e:
+        return jsonify({'success': False, 'error': str(e)}), 502
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/incidencia-gtask', methods=['POST'])
+def api_incidencia_gtask():
+    """Incidencia abierta en BC → id tarea GTask para abrir o crear tarea."""
+    data = request.get_json() or {}
+    parada = (data.get('parada') or '').strip()
+    recurso = (data.get('recurso') or '').strip()
+    if parada:
+        payload = {'parada': parada}
+    elif recurso:
+        payload = {'recurso': recurso}
+    else:
+        return jsonify({'success': False, 'error': 'Indique parada o recurso'}), 400
+    try:
+        endpoint = BC_CONFIG.get('endpoint_incidencia_gtask') or '/ODataV4/GtaskMalla_GetIncidenciaTareaGtask'
+        result = bc_post_json_text(endpoint, payload)
+        return jsonify({
+            'success': True,
+            'encontrado': bool(result.get('encontrado')),
+            'idTareaGtask': (result.get('idTareaGtask') or '').strip(),
+            'idQr': (result.get('idQr') or '').strip(),
+            'noIncidencia': (result.get('noIncidencia') or '').strip(),
+            'tareaCreada': bool(result.get('tareaCreada')),
+            'error': (result.get('error') or '').strip(),
+        })
+    except json.JSONDecodeError as e:
+        return jsonify({'success': False, 'error': f'Respuesta BC inválida: {e}'}), 502
+    except requests.RequestException as e:
+        return jsonify({'success': False, 'error': str(e)}), 502
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/gtask/login', methods=['POST'])
+def gtask_login():
+    try:
+        data = request.get_json() or {}
+        username = (data.get('username') or '').strip()
+        password = data.get('password') or ''
+        if not username or not password:
+            return jsonify({'success': False, 'error': 'Usuario y contraseña son requeridos'}), 400
+        sess = get_device_session()
+        gtask_auth = sess['gtask_auth']
+        result = gtask_auth.login(username, password)
+        if result.get('success'):
+            sess['user_data'] = gtask_auth.current_user
+            return jsonify({'success': True, 'message': 'Login exitoso', 'user': gtask_auth.current_user})
+        return jsonify(result), 401
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/gtask/status', methods=['GET'])
+def gtask_status():
+    try:
+        sess = get_device_session()
+        gtask_auth = sess['gtask_auth']
+        if sess.get('user_data') and gtask_auth.is_token_valid():
+            return jsonify({
+                'success': True,
+                'is_authenticated': True,
+                'user': {
+                    '_id': sess['user_data'].get('_id'),
+                    'username': sess['user_data'].get('username'),
+                },
+            })
+        return jsonify({'success': True, 'is_authenticated': False})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/gtask/logout', methods=['POST'])
+def gtask_logout():
+    try:
+        sess = get_device_session()
+        sess['user_data'] = None
+        sess['gtask_auth'].logout()
+        return jsonify({'success': True, 'message': 'Logout exitoso'})
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 # Configuración para IIS
 # Nota: Para IIS, usar wsgi.py como punto de entrada

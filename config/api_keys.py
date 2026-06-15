@@ -32,5 +32,17 @@ GEOCODING_SERVICES = {
 SEARCH_CONFIG = {
     'timeout': 10,
     'max_retries': 3,
-    'use_fallback': True
+    'use_fallback': True,
+    # Límite geográfico: solo Islas Baleares (búsqueda por dirección)
+    'baleares_bounds': {
+        'lat_min': 38.62,
+        'lat_max': 40.12,
+        'lon_min': 1.10,
+        'lon_max': 4.42,
+    },
+    'baleares_admin_area': 'Illes Balears',
+    'baleares_terms': (
+        'balear', 'illes balears', 'islas baleares', 'balearic',
+        'mallorca', 'majorca', 'menorca', 'minorca', 'ibiza', 'eivissa', 'formentera',
+    ),
 }

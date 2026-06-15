@@ -53,7 +53,7 @@
             <div class="controls">
                 <!-- Nueva sección de búsqueda -->
                 <div class="search-section">
-                    <h3>🔍 Buscar Recursos Cerca</h3>
+                    <h3>🔍 Buscar en el Mapa</h3>
                     <div class="search-controls">
                         <div class="search-option">
                             <label>
@@ -71,6 +71,12 @@
                             <label>
                                 <input type="radio" name="searchType" value="address">
                                 <span>De una dirección</span>
+                            </label>
+                        </div>
+                        <div class="search-option">
+                            <label>
+                                <input type="radio" name="searchType" value="stop">
+                                <span>Buscar parada</span>
                             </label>
                         </div>
                         <div class="search-option">
@@ -95,6 +101,7 @@
                             <small class="form-text text-muted">Obligatorio: entre 0.1 y 50 km</small>
                         </div>
                         <button id="searchByPlace" class="btn btn-warning">Buscar Recursos Cerca</button>
+                        <button id="searchMobiliarioByPlace" class="btn btn-info">Buscar Mobiliario Cerca</button>
                         <button id="useSavedLocationPlace" class="btn btn-info" title="No hay ubicación guardada. Usa 'Obtener Ubicación Actual' primero.">📍¿Donde Buscar?</button>
                         <button id="cancelSearch" class="btn btn-secondary" style="display: none;">Cancelar Búsqueda</button>
                     </div>
@@ -119,6 +126,7 @@
                             <button type="button" class="btn btn-secondary btn-sm" onclick="clearCoordinates()">Limpiar</button>
                         </div>
                         <button id="searchByCoordinates" class="btn btn-warning">Buscar Recursos Cerca</button>
+                        <button id="searchMobiliarioByCoordinates" class="btn btn-info">Buscar Mobiliario Cerca</button>
                         <button id="useCurrentLocation" class="btn btn-info" title="Obtener tu ubicación actual usando GPS">📍 Obtener Ubicación Actual</button>
                         <div id="locationStatus" class="location-status" style="display: none; margin-top: 5px; padding: 5px; background-color: #e8f5e8; border: 1px solid #4caf50; border-radius: 3px; font-size: 12px; color: #2e7d32;">
                             <span id="locationStatusText">📍 Ubicación guardada disponible</span>
@@ -129,7 +137,7 @@
                     <div id="addressSearch" class="search-panel">
                         <div class="form-group">
                             <label for="addressInput">Dirección:</label>
-                            <input type="text" id="addressInput" class="form-control" placeholder="Plaza España, Palma">
+                            <input type="text" id="addressInput" class="form-control" placeholder="Plaza España, Palma de Mallorca">
                         </div>
                         <div class="form-group">
                             <label for="addressRadius">Radio de búsqueda (km) *:</label>
@@ -137,7 +145,17 @@
                             <small class="form-text text-muted">Obligatorio: entre 0.1 y 50 km</small>
                         </div>
                         <button id="searchByAddress" class="btn btn-warning">Buscar Recursos Cerca</button>
+                        <button id="searchMobiliarioByAddress" class="btn btn-info">Buscar Mobiliario Cerca</button>
                         <button id="useSavedLocationAddress" class="btn btn-info" title="No hay ubicación guardada. Usa 'Obtener Ubicación Actual' primero.">📍 ¿Donde Buscar?</button>
+                    </div>
+
+                    <!-- Búsqueda por número de parada -->
+                    <div id="stopSearch" class="search-panel">
+                        <div class="form-group">
+                            <label for="stopNumberInput">Nº de parada (emplazamiento):</label>
+                            <input type="text" id="stopNumberInput" class="form-control" placeholder="Ej: 1024">
+                        </div>
+                        <button id="searchByStop" class="btn btn-warning">Buscar Parada</button>
                     </div>
                     
                     <!-- Búsqueda por zona personalizada -->
@@ -171,7 +189,8 @@
                                 <li><strong>Tipo de lugar:</strong> Selecciona el tipo y haz clic en el mapa para buscar</li>
                                 <li><strong>Coordenadas:</strong> Introduce coordenadas manualmente, haz clic en el mapa o usa tu ubicación actual</li>
                                 <li><strong>Ubicación actual:</strong> La primera vez obtén tu ubicación GPS, después podrás reutilizarla fácilmente</li>
-                                <li><strong>Dirección:</strong> Escribe una dirección y busca recursos cerca</li>
+                                <li><strong>Dirección:</strong> Escribe una dirección y busca recursos o mobiliario cerca</li>
+                                <li><strong>Parada:</strong> Introduce el número de emplazamiento para localizar la parada en el mapa</li>
                                 <li><strong>Zona personalizada:</strong> Crea zonas dibujando en el mapa y guárdalas para búsquedas futuras</li>
                                 <li><strong>Radio obligatorio:</strong> Siempre debes especificar el radio de búsqueda (0.1-50 km)</li>
                                 <li><strong>Posicionamiento:</strong> Para búsquedas por tipo de lugar, haz clic en el mapa donde quieres buscar</li>
@@ -210,7 +229,8 @@
                         </select>
                         <small class="form-text text-muted" style="font-size: 0.7rem;">Ctrl/Cmd para múltiples</small>
                     </div>
-                    <div class="form-group">
+                    <!-- Filtro familia: oculto de momento; quitar clase filtro-familia-oculto para mostrarlo -->
+                    <div class="form-group filtro-familia-oculto">
                         <label for="familias">Familia (múltiple):</label>
                         <select id="familias" class="form-control" multiple size="4" style="min-height: 80px; font-size: 0.8rem;">
                             <option value="">Cargando familias...</option>
@@ -301,7 +321,28 @@
             </div>
         </div>
     </div>
+
+    <!-- Modal: elegir dirección cuando hay varias coincidencias -->
+    <div id="addressPickerModal" class="modal" style="display: none;">
+        <div class="modal-content address-picker-modal">
+            <div class="modal-header">
+                <h3>Selecciona una dirección</h3>
+                <span class="close" id="closeAddressPickerModal">&times;</span>
+            </div>
+            <div class="modal-body">
+                <p id="addressPickerIntro" class="address-picker-intro"></p>
+                <div id="addressPickerList" class="address-picker-list"></div>
+            </div>
+            <div class="modal-footer">
+                <button id="cancelAddressPicker" class="btn btn-secondary">Cancelar</button>
+            </div>
+        </div>
+    </div>
     
+    <script id="incidencias-url-json" type="application/json">{{ (incidencias_url or '') | tojson }}</script>
+    <script>
+        window.INCIDENCIAS_URL = JSON.parse(document.getElementById("incidencias-url-json").textContent);
+    </script>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>

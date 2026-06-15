@@ -33,6 +33,263 @@ let zoneLayer = null;
 let recursosSeleccionados = new Set(); // Almacena los No_ de recursos seleccionados
 let recursosDataMap = new Map(); // Almacena los datos completos de cada recurso por No_
 
+// Incidencias / GTask (misma lógica que Rutas)
+let incidenciasDeviceId = null;
+let incidenciasCurrentUser = null;
+let incidenciasIsAuthenticated = false;
+
+function setIncidenciasStatus(msg, isError) {
+    const el = document.getElementById('status');
+    if (el) {
+        el.textContent = msg || '';
+        el.style.color = isError ? '#dc2626' : '#64748b';
+    }
+}
+
+function getIncidenciasDeviceId() {
+    if (!incidenciasDeviceId) {
+        try {
+            incidenciasDeviceId = localStorage.getItem('gis_device_id');
+        } catch (e) { /* ignore */ }
+        if (!incidenciasDeviceId) {
+            incidenciasDeviceId = 'gis-' + Math.random().toString(36).slice(2) + Date.now().toString(36);
+            try {
+                localStorage.setItem('gis_device_id', incidenciasDeviceId);
+            } catch (e) { /* ignore */ }
+        }
+    }
+    return incidenciasDeviceId;
+}
+
+function getIncidenciasAppBaseUrl() {
+    return (typeof window !== 'undefined' && window.INCIDENCIAS_URL)
+        ? (String(window.INCIDENCIAS_URL).replace(/\/$/, '') + '/')
+        : '';
+}
+
+function openGtaskUrlForIncidencia(idTareaGtask, idQr) {
+    if (idTareaGtask) {
+        window.open(
+            'https://gtasks-app.deploy.malla.es/task/' + encodeURIComponent(String(idTareaGtask)),
+            '_blank'
+        );
+        return;
+    }
+    if (idQr) {
+        window.open(
+            'https://gtasks-app.deploy.malla.es/IdQr/' + encodeURIComponent(String(idQr)),
+            '_blank'
+        );
+    }
+}
+
+function openIncidenciasAppUrl(parada, recurso, documentNo) {
+    const base = getIncidenciasAppBaseUrl();
+    if (!base) return false;
+    let url;
+    if (documentNo) {
+        url = base + '?id=' + encodeURIComponent(String(documentNo));
+    } else {
+        const params = new URLSearchParams();
+        if (parada) params.set('parada', parada);
+        if (recurso) params.set('recurso', recurso);
+        url = base + (params.toString() ? '?' + params.toString() : '');
+    }
+    window.open(url, '_blank');
+    return true;
+}
+
+function openIncidenciasForContext(ctx) {
+    const parada = (ctx.parada || '').trim();
+    const recurso = parada ? '' : (ctx.recurso || '').trim();
+    if (!parada && !recurso) {
+        setIncidenciasStatus('No hay parada ni recurso para incidencias.', true);
+        return;
+    }
+    const base = getIncidenciasAppBaseUrl();
+    if (!base) {
+        const msg = 'INCIDENCIAS_URL no configurada. Añade INCIDENCIAS_URL al .env del servidor.';
+        setIncidenciasStatus(msg, true);
+        console.warn(msg);
+        return;
+    }
+    if (!incidenciasIsAuthenticated || !incidenciasCurrentUser) {
+        openIncidenciasAppUrl(parada, recurso, null);
+        setIncidenciasStatus('Abriendo incidencias (inicia sesión GTask para reutilizar INC abiertas).');
+        return;
+    }
+    const body = {};
+    if (parada) body.parada = parada;
+    else body.recurso = recurso;
+    setIncidenciasStatus('Buscando incidencias abiertas...');
+    fetch('/api/incidencias-abiertas', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Device-ID': getIncidenciasDeviceId() },
+        body: JSON.stringify(body)
+    })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) {
+                setIncidenciasStatus(data.error || 'Error al buscar incidencias', true);
+                return;
+            }
+            if (data.documentNo) {
+                openIncidenciasAppUrl(parada, recurso, data.documentNo);
+                setIncidenciasStatus('Abriendo incidencia ' + data.documentNo + '.');
+                return;
+            }
+            openIncidenciasAppUrl(parada, recurso, null);
+            setIncidenciasStatus('Abriendo incidencias para ' + (parada || recurso) + ' (nueva).');
+        })
+        .catch(e => {
+            setIncidenciasStatus('Error al buscar incidencias: ' + e.message + '. Abriendo formulario nuevo.', true);
+            openIncidenciasAppUrl(parada, recurso, null);
+        });
+}
+
+function openGtaskIncidenciaForContext(ctx) {
+    const parada = ctx.parada || '';
+    const recurso = parada ? '' : (ctx.recurso || '');
+    if (!parada && !recurso) {
+        setIncidenciasStatus('No hay parada ni recurso para buscar incidencias.', true);
+        return;
+    }
+    const body = {};
+    if (parada) body.parada = parada;
+    else body.recurso = recurso;
+    setIncidenciasStatus('Buscando incidencia abierta...');
+    fetch('/api/incidencia-gtask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Device-ID': getIncidenciasDeviceId() },
+        body: JSON.stringify(body)
+    })
+        .then(r => r.json())
+        .then(data => {
+            if (!data.success) {
+                setIncidenciasStatus(data.error || 'Error al buscar incidencia', true);
+                return;
+            }
+            if (!data.encontrado) {
+                setIncidenciasStatus('No hay incidencias en esta parada/recurso', true);
+                return;
+            }
+            if (data.error && !data.idTareaGtask) {
+                setIncidenciasStatus(data.error, true);
+                return;
+            }
+            if (data.idTareaGtask || data.idQr) {
+                openGtaskUrlForIncidencia(data.idTareaGtask, data.idQr);
+                setIncidenciasStatus(
+                    data.tareaCreada
+                        ? 'Tarea de incidencia creada en GTask. Abriendo…'
+                        : 'Abriendo tarea incidencia en GTask.'
+                );
+                return;
+            }
+            setIncidenciasStatus('No hay incidencias en esta parada/recurso', true);
+        })
+        .catch(e => {
+            setIncidenciasStatus('Error al buscar incidencia: ' + e.message, true);
+        });
+}
+
+function htmlEscapeAttr(s) {
+    return String(s || '')
+        .replace(/&/g, '&amp;')
+        .replace(/"/g, '&quot;')
+        .replace(/</g, '&lt;');
+}
+
+function escapeJsString(s) {
+    return String(s || '')
+        .replace(/\\/g, '\\\\')
+        .replace(/'/g, "\\'")
+        .replace(/\r/g, '')
+        .replace(/\n/g, '\\n');
+}
+
+/** Llamado desde onclick en el HTML del popup (fiable con Leaflet) */
+function gisIncidenciaClick(ev, action, parada, recurso) {
+    if (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+    }
+    const ctx = { parada: parada || '', recurso: recurso || '' };
+    if (action === 'incidencia') openIncidenciasForContext(ctx);
+    else if (action === 'tarea') openGtaskIncidenciaForContext(ctx);
+}
+window.gisIncidenciaClick = gisIncidenciaClick;
+
+function getIncidenciasBotonesHtml(parada, recurso) {
+    const p = escapeJsString(parada);
+    const r = escapeJsString(recurso);
+    return `
+        <div class="popup-incidencias-botones">
+            <div class="popup-botones" data-parada="${htmlEscapeAttr(parada)}" data-recurso="${htmlEscapeAttr(recurso)}">
+                <button type="button" class="btn btn-card btn-card-icon btn-card-incidencia" data-inc-action="incidencia" title="Abrir o crear incidencia"
+                    onclick="gisIncidenciaClick(event,'incidencia','${p}','${r}'); return false;">
+                    <img src="/static/images/incidencias-icon.png" alt="Incidencias" class="btn-icon-img">
+                </button>
+                <button type="button" class="btn btn-card btn-card-icon btn-card-tarea" data-inc-action="tarea" title="Abrir incidencia en GTask"
+                    onclick="gisIncidenciaClick(event,'tarea','${p}','${r}'); return false;">
+                    <span class="gtask-logo-mini">
+                        <span class="gtask-square gtask-square-1"></span>
+                        <span class="gtask-square gtask-square-2"></span>
+                        <span class="gtask-plus">+</span>
+                    </span>
+                </button>
+            </div>
+        </div>`;
+}
+
+/** Delegación en el mapa: los botones funcionan aunque el popup se regenere con setPopupContent */
+function initIncidenciasPopupDelegation() {
+    if (!map || map._incidenciasDelegationInit) return;
+    map._incidenciasDelegationInit = true;
+    const container = map.getContainer();
+    container.addEventListener('click', function (e) {
+        const btn = e.target.closest('[data-inc-action]');
+        if (!btn || !btn.closest('.leaflet-popup')) return;
+        L.DomEvent.preventDefault(e);
+        L.DomEvent.stopPropagation(e);
+        const box = btn.closest('.popup-botones');
+        if (!box) return;
+        const ctx = {
+            parada: box.getAttribute('data-parada') || '',
+            recurso: box.getAttribute('data-recurso') || ''
+        };
+        const action = btn.getAttribute('data-inc-action');
+        if (action === 'incidencia') openIncidenciasForContext(ctx);
+        else if (action === 'tarea') openGtaskIncidenciaForContext(ctx);
+    }, true);
+}
+
+function setupPopupIncidenciaButtons(marker) {
+    marker.off('popupopen.incidencias');
+    marker.on('popupopen', function () {
+        const el = marker.getPopup()?.getElement();
+        if (!el) return;
+        L.DomEvent.disableClickPropagation(el);
+        L.DomEvent.disableScrollPropagation(el);
+    });
+}
+
+async function initIncidenciasAuth() {
+    getIncidenciasDeviceId();
+    try {
+        const r = await fetch('/api/gtask/status', {
+            headers: { 'X-Device-ID': getIncidenciasDeviceId() }
+        });
+        const data = await r.json();
+        if (data.success && data.is_authenticated) {
+            incidenciasIsAuthenticated = true;
+            incidenciasCurrentUser = data.user;
+        }
+    } catch (e) {
+        console.warn('Estado GTask no disponible:', e);
+    }
+}
+
 // Función para obtener el icono según el tipo de recurso
 function getIconoPorTipoRecurso(tipoRecurso, color) {
     // Normalizar el tipo de recurso (trim, mayúsculas)
@@ -122,6 +379,32 @@ function getIconoPorTipoRecurso(tipoRecurso, color) {
     });
 }
 
+function getFechasFormulario() {
+    return {
+        fechaDesde: document.getElementById('fechaDesde')?.value || '',
+        fechaHasta: document.getElementById('fechaHasta')?.value || ''
+    };
+}
+
+async function fetchConTimeout(url, ms = 6000) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), ms);
+    try {
+        return await fetch(url, { signal: controller.signal });
+    } finally {
+        clearTimeout(timer);
+    }
+}
+
+function buildUrlCampanasRecurso(noRecurso) {
+    const { fechaDesde, fechaHasta } = getFechasFormulario();
+    const params = new URLSearchParams();
+    params.append('no_recurso', noRecurso);
+    if (fechaDesde) params.append('fecha_desde', fechaDesde);
+    if (fechaHasta) params.append('fecha_hasta', fechaHasta);
+    return `/api/campanas?${params.toString()}`;
+}
+
 // Función común para crear un popup completo de recurso con carga de detalles
 function crearPopupRecurso(marker, recurso) {
     // Almacenar datos del recurso
@@ -152,17 +435,23 @@ function crearPopupRecurso(marker, recurso) {
             <p style="text-align: center; margin-top: 5px; font-size: 12px; color: #666;">
                 <em>Haz clic para ver detalles completos</em>
             </p>
+            ${getIncidenciasBotonesHtml('', String(recurso.No_ || recurso['No_'] || ''))}
         </div>
     `;
     
     // Usar tooltip simple inicialmente
-    marker.bindPopup(simpleTooltip);
+    marker.bindPopup(simpleTooltip, { maxWidth: 400 });
+    setupPopupIncidenciaButtons(marker);
     
-    // Crear tooltip completo solo cuando se necesite
+    let recursoDetallesCargados = false;
+    let recursoDetallesCargando = false;
+    
+    // Crear tooltip completo solo cuando se necesite (no en cada clic del popup)
     marker.on('click', async function() {
+        if (recursoDetallesCargados || recursoDetallesCargando) return;
+        recursoDetallesCargando = true;
         console.log(`🖱️ Click en recurso: ${recurso.No_}`);
         
-        // Mostrar tooltip de carga
         const loadingTooltip = `
             <div style="max-width: 300px; padding: 10px; text-align: center;">
                 <h4>🔧 ${recurso.Name || 'Sin nombre'}</h4>
@@ -173,142 +462,64 @@ function crearPopupRecurso(marker, recurso) {
         marker.setPopupContent(loadingTooltip);
         
         try {
-            // Cargar detalles desde el API
-            console.log(`🔍 Cargando detalles para recurso: ${recurso.No_}`);
-            const urlDetalles = `/api/recursos/${recurso.No_}/detalles`;
-            console.log(`📡 URL de petición detalles: ${urlDetalles}`);
-            
-            // Obtener fechas para filtrar campañas
-            const fechaDesde = document.getElementById('fechaDesde')?.value || '';
-            const fechaHasta = document.getElementById('fechaHasta')?.value || '';
-            const empresa = recurso.Empresa || '';
-            
-            console.log(`📅 Fechas para filtrar campañas: desde=${fechaDesde}, hasta=${fechaHasta}, empresa=${empresa}`);
-            
-            // Construir URL para campañas con filtros
-            let urlCampanas = '/api/campanas?';
-            const paramsCampanas = new URLSearchParams();
-            paramsCampanas.append('no_recurso', recurso.No_);
-            if (fechaDesde) paramsCampanas.append('fecha_desde', fechaDesde);
-            if (fechaHasta) paramsCampanas.append('fecha_hasta', fechaHasta);
-            if (empresa) paramsCampanas.append('empresa', empresa);
-            urlCampanas += paramsCampanas.toString();
-            
-            console.log(`📡 URL de petición campañas: ${urlCampanas}`);
-            console.log(`📡 Iniciando petición a /api/campanas...`);
-            
-            // Cargar detalles e incidencias
-            const responseDetalles = await fetch(urlDetalles);
-            console.log(`📡 Respuesta detalles recibida:`, responseDetalles.status, responseDetalles.statusText);
-            
+            const urlCampanas = buildUrlCampanasRecurso(recurso.No_);
+            const { fechaDesde, fechaHasta } = getFechasFormulario();
+            let urlDetallesFull = `/api/recursos/${encodeURIComponent(recurso.No_)}/detalles`;
+            const detParams = new URLSearchParams();
+            if (fechaDesde) detParams.append('fecha_desde', fechaDesde);
+            if (fechaHasta) detParams.append('fecha_hasta', fechaHasta);
+            if (detParams.toString()) urlDetallesFull += '?' + detParams.toString();
+
+            const [responseDetalles, responseCampanas] = await Promise.all([
+                fetch(urlDetallesFull),
+                fetch(urlCampanas)
+            ]);
+
             if (!responseDetalles.ok) {
                 throw new Error(`Error al cargar detalles: ${responseDetalles.status}`);
             }
-            
-            // Cargar detalles e incidencias primero
+
             const dataDetalles = await responseDetalles.json();
-            console.log(`📊 Datos de detalles recibidos:`, dataDetalles);
-            
-            // Cargar campañas con filtros
-            console.log(`📡 Iniciando fetch a: ${urlCampanas}`);
-            let responseCampanas;
-            try {
-                responseCampanas = await fetch(urlCampanas);
-                console.log(`📡 Respuesta campañas recibida:`, responseCampanas.status, responseCampanas.statusText);
-            } catch (fetchError) {
-                console.error(`❌ Error en fetch de campañas:`, fetchError);
-                throw fetchError;
-            }
-            
             let dataCampanas = { datos: [], total_registros: 0 };
-            
             if (responseCampanas.ok) {
-                try {
-                    dataCampanas = await responseCampanas.json();
-                    console.log(`✅ Campañas parseadas correctamente:`, dataCampanas);
-                } catch (jsonError) {
-                    console.error(`❌ Error parseando JSON de campañas:`, jsonError);
-                    const textResponse = await responseCampanas.text();
-                    console.error(`❌ Respuesta de texto:`, textResponse);
-                }
+                dataCampanas = await responseCampanas.json();
             } else {
                 console.warn(`⚠️ Error al cargar campañas: ${responseCampanas.status}`);
-                const errorText = await responseCampanas.text();
-                console.warn(`⚠️ Mensaje de error:`, errorText);
             }
-            
-            console.log(`📊 Campañas recibidas:`, dataCampanas);
-            console.log(`📊 Total campañas:`, dataCampanas.total_registros || 0);
-            console.log(`📊 Longitud array campañas:`, dataCampanas.datos ? dataCampanas.datos.length : 0);
-            
-            if (dataCampanas.datos && dataCampanas.datos.length > 0) {
-                console.log(`📊 Primera campaña ejemplo:`, dataCampanas.datos[0]);
-                console.log(`📊 Campos de la primera campaña:`, Object.keys(dataCampanas.datos[0]));
-            } else {
-                console.log(`⚠️ No hay datos de campañas en la respuesta`);
-            }
-            
-            // Usar campañas de la API de campañas si están disponibles, sino usar las de detalles
-            const campanas = dataCampanas.datos && dataCampanas.datos.length > 0 
-                ? dataCampanas.datos 
-                : (dataDetalles.campanas || []);
-            const totalCampanas = dataCampanas.total_registros || dataDetalles.total_campanas || 0;
-            
-            // Cargar imagen del recurso si existe el campo Ruta
+
+            // Solo campañas filtradas por periodo (nunca el listado histórico de /detalles)
+            const campanas = Array.isArray(dataCampanas.datos) ? dataCampanas.datos : [];
+            const totalCampanas = campanas.length;
+
             let imagenBase64 = null;
-            
-            // Verificar campos disponibles en el recurso
-            console.log(`📷 Campos del recurso:`, Object.keys(recurso));
-            console.log(`📷 Recurso.Ruta:`, recurso.Ruta);
-            console.log(`📷 Recurso['Ruta']:`, recurso['Ruta']);
-            console.log(`📷 Recurso.No_:`, recurso.No_);
-            
-            // Intentar obtener Ruta con diferentes nombres posibles
             const ruta = recurso.Ruta || recurso['Ruta'] || recurso.ruta || '';
             const numeroRecurso = recurso.No_ || recurso['No_'] || '';
-            
-            console.log(`📷 Ruta encontrada: "${ruta}", Número: "${numeroRecurso}"`);
-            
+
             if (ruta && numeroRecurso) {
                 try {
-                    const filepath = ruta+'/' + numeroRecurso + '.jpg';
+                    const filepath = ruta + '/' + numeroRecurso + '.jpg';
                     const urlImagen = `/file?filepath=${encodeURIComponent(filepath)}`;
-                    console.log(`📷 Cargando imagen desde: ${urlImagen}`);
-                    console.log(`📷 Filepath completo: ${filepath}`);
-                    
-                    const responseImagen = await fetch(urlImagen);
-                    console.log(`📷 Respuesta de imagen:`, responseImagen.status, responseImagen.statusText);
-                    
+                    const responseImagen = await fetchConTimeout(urlImagen, 5000);
                     if (responseImagen.ok) {
                         const imagenData = await responseImagen.text();
-                        console.log(`📷 Datos recibidos (primeros 100 caracteres):`, imagenData.substring(0, 100));
-                        
-                        // Verificar si es base64 válido
                         if (imagenData && imagenData.trim().length > 0) {
                             imagenBase64 = imagenData;
-                            console.log(`✅ Imagen cargada correctamente (${imagenData.length} caracteres)`);
-                        } else {
-                            console.warn(`⚠️ Imagen recibida pero está vacía`);
                         }
-                    } else {
-                        const errorText = await responseImagen.text();
-                        console.log(`⚠️ No se pudo cargar la imagen: ${responseImagen.status} - ${errorText}`);
                     }
                 } catch (error) {
-                    console.error(`❌ Error cargando imagen del recurso:`, error);
+                    console.warn(`⚠️ Imagen del recurso no cargada (timeout o error):`, error);
                 }
-            } else {
-                console.log(`⚠️ No se puede cargar imagen: Ruta="${ruta}", No_="${numeroRecurso}"`);
             }
-            
+
             let tooltipContent = `
                 <div style="max-width: 400px; max-height: 500px; overflow-y: auto; padding: 5px;">
                     <h4>🔧 Recurso: ${recurso.Name || 'Sin nombre'}</h4>
                     <p><strong>Nº:</strong> ${recurso.No_}</p>
                     ${recurso['Tipo Recurso'] ? `<p><strong>Tipo de Recurso:</strong> ${recurso['Tipo Recurso']}</p>` : ''}
                     ${recurso.Empresa ? `<p><strong>Empresa:</strong> ${recurso.Empresa}</p>` : ''}
+                    ${fechaDesde && fechaHasta ? `<p><strong>Periodo:</strong> ${fechaDesde} → ${fechaHasta}</p>` : ''}
                     <p><strong>Estado:</strong> ${dataDetalles.total_incidencias > 0 ? '🚨 Con incidencias' : totalCampanas > 0 ? '📋 Con campañas' : '✅ Sin problemas'}</p>
-                    <p><strong>Total campañas:</strong> ${totalCampanas}</p>
+                    <p><strong>Total campañas (periodo):</strong> ${totalCampanas}</p>
                     <p><strong>Total incidencias:</strong> ${dataDetalles.total_incidencias || 0}</p>
                     ${imagenBase64 ? `
                     <div style="margin: 10px 0; text-align: center;">
@@ -330,100 +541,46 @@ function crearPopupRecurso(marker, recurso) {
                     </div>
             `;
             
-            // Mostrar campañas
-            if (campanas && Array.isArray(campanas) && campanas.length > 0) {
-                console.log(`📋 Mostrando ${campanas.length} campañas`);
-                console.log(`📋 Estructura de campañas:`, campanas);
+            if (campanas.length > 0) {
                 tooltipContent += `<h5 style="margin-top: 15px; margin-bottom: 10px;">📋 Campañas (${campanas.length}):</h5>`;
                 campanas.forEach((campana, index) => {
-                    console.log(`📋 Procesando campaña ${index + 1}:`, campana);
                     tooltipContent += `<div style="margin-bottom: 10px; padding: 8px; background-color: #f8f9fa; border-left: 3px solid #007bff; border-radius: 4px;">`;
                     tooltipContent += `<strong style="color: #007bff; font-size: 1.05em;">Campaña ${index + 1}</strong><br><br>`;
-                    
-                    // Mostrar todos los campos disponibles para debugging
-                    console.log(`📋 Campos de campaña ${index + 1}:`, Object.keys(campana));
-                    
-                    // Intentar con diferentes nombres de campos posibles
                     const nombreCampana = campana.Campaña || campana['Campaña'] || campana.campana || '';
                     const cliente = campana.Cliente || campana['Cliente'] || campana.cliente || '';
                     const inicio = campana.Inicio || campana['Inicio'] || campana.inicio || '';
                     const fin = campana.Fin || campana['Fin'] || campana.fin || '';
-                    const noIncidencia = campana['Nº Incidencia'] || campana['Nº Incidencia'] || campana.no_incidencia || '';
-                    
-                    if (nombreCampana) {
-                        tooltipContent += `<strong>📌 Nombre:</strong> ${nombreCampana}<br>`;
-                    }
-                    
-                    if (cliente) {
-                        tooltipContent += `<strong>👤 Cliente:</strong> ${cliente}<br>`;
-                    }
-                    
-                    if (inicio) {
-                        tooltipContent += `<strong>📅 Inicio:</strong> ${formatearFecha(inicio)}<br>`;
-                    }
-                    
-                    if (fin) {
-                        tooltipContent += `<strong>📅 Fin:</strong> ${formatearFecha(fin)}<br>`;
-                    }
-                    
-                    // Calcular duración si hay fechas
+                    const noIncidencia = campana['Nº Incidencia'] || campana.no_incidencia || '';
+                    if (nombreCampana) tooltipContent += `<strong>📌 Nombre:</strong> ${nombreCampana}<br>`;
+                    if (cliente) tooltipContent += `<strong>👤 Cliente:</strong> ${cliente}<br>`;
+                    if (inicio) tooltipContent += `<strong>📅 Inicio:</strong> ${formatearFecha(inicio)}<br>`;
+                    if (fin) tooltipContent += `<strong>📅 Fin:</strong> ${formatearFecha(fin)}<br>`;
                     if (inicio && fin) {
                         try {
-                            const inicioDate = new Date(inicio);
-                            const finDate = new Date(fin);
-                            const diffTime = Math.abs(finDate - inicioDate);
-                            const diffDays = Math.ceil(diffTime / (1000 * 60 * 60 * 24));
+                            const diffDays = Math.ceil(Math.abs(new Date(fin) - new Date(inicio)) / (1000 * 60 * 60 * 24));
                             tooltipContent += `<strong>⏱️ Duración:</strong> ${diffDays} día${diffDays !== 1 ? 's' : ''}<br>`;
-                        } catch (e) {
-                            console.warn(`⚠️ Error calculando duración:`, e);
-                        }
+                        } catch (e) { /* ignore */ }
                     }
-                    
-                    if (noIncidencia) {
-                        tooltipContent += `<strong>🔢 Nº Incidencia:</strong> ${noIncidencia}<br>`;
-                    }
-                    
-                    // Mostrar todos los campos adicionales que puedan existir
-                    Object.keys(campana).forEach(key => {
-                        const value = campana[key];
-                        if (value && !['Campaña', 'Cliente', 'Inicio', 'Fin', 'Nº Incidencia', 'Nº Recurso'].includes(key)) {
-                            tooltipContent += `<strong>${key}:</strong> ${value}<br>`;
-                        }
-                    });
-                    
+                    if (noIncidencia) tooltipContent += `<strong>🔢 Nº Incidencia:</strong> ${noIncidencia}<br>`;
                     tooltipContent += `</div>`;
                 });
             } else {
-                console.log(`⚠️ No hay campañas o el array está vacío`);
-                console.log(`⚠️ campanas:`, campanas);
-                console.log(`⚠️ totalCampanas:`, totalCampanas);
-                if (totalCampanas > 0 && (!campanas || campanas.length === 0)) {
-                    tooltipContent += `<p style="color: orange;"><em>⚠️ Se reportan ${totalCampanas} campaña(s) pero no se pudieron cargar los detalles</em></p>`;
-                } else {
-                    tooltipContent += `<p><em>No hay campañas asociadas</em></p>`;
-                }
+                tooltipContent += `<p><em>No hay campañas en el periodo seleccionado</em></p>`;
             }
             
             if (dataDetalles.incidencias && dataDetalles.incidencias.length > 0) {
                 tooltipContent += `<h5>🚨 Incidencias (${dataDetalles.incidencias.length}):</h5>`;
-                
-                // Agrupar incidencias por tipo
                 const incidenciasPorTipo = {};
                 dataDetalles.incidencias.forEach(incidencia => {
                     const tipo = incidencia.Tipo || 'Sin tipo';
-                    if (!incidenciasPorTipo[tipo]) {
-                        incidenciasPorTipo[tipo] = [];
-                    }
+                    if (!incidenciasPorTipo[tipo]) incidenciasPorTipo[tipo] = [];
                     incidenciasPorTipo[tipo].push(incidencia);
                 });
-                
-                // Mostrar resumen por tipo
                 Object.keys(incidenciasPorTipo).forEach(tipo => {
                     const incidenciasTipo = incidenciasPorTipo[tipo];
                     const fechas = incidenciasTipo.map(i => i.Fecha).filter(f => f).sort();
                     const desde = fechas.length > 0 ? formatearFecha(fechas[0]) : 'Sin fecha';
                     const hasta = fechas.length > 0 ? formatearFecha(fechas[fechas.length - 1]) : 'Sin fecha';
-                    
                     tooltipContent += `<div style="margin-bottom: 8px; padding: 5px; background-color: #fff3cd; border-left: 3px solid #ffc107;">`;
                     tooltipContent += `<strong>Tipo:</strong> ${tipo}<br>`;
                     tooltipContent += `<strong>Cantidad:</strong> ${incidenciasTipo.length}<br>`;
@@ -435,42 +592,26 @@ function crearPopupRecurso(marker, recurso) {
                 tooltipContent += `<p><em>No hay incidencias registradas</em></p>`;
             }
             
+            tooltipContent += getIncidenciasBotonesHtml('', String(recurso.No_ || recurso['No_'] || ''));
             tooltipContent += `</div>`;
-            
-            // Log final para debugging
-            console.log(`📋 Contenido final del tooltip (primeros 500 caracteres):`, tooltipContent.substring(0, 500));
-            console.log(`📋 ¿Contiene "Campañas"?`, tooltipContent.includes('Campañas'));
-            console.log(`📋 ¿Contiene "📋"?`, tooltipContent.includes('📋'));
-            console.log(`📋 Longitud total del tooltip:`, tooltipContent.length);
-            
+            recursoDetallesCargados = true;
             marker.setPopupContent(tooltipContent);
-            
-            // Forzar actualización del popup si está abierto
-            if (marker.isPopupOpen()) {
-                marker.openPopup();
-            }
+            if (marker.isPopupOpen()) marker.openPopup();
             
         } catch (error) {
             console.error('Error cargando detalles:', error);
-            console.error('Recurso ID:', recurso.No_);
-            console.error('URL de petición:', `/api/recursos/${recurso.No_}/detalles`);
-            
             const errorTooltip = `
                 <div style="max-width: 300px; padding: 10px;">
                     <h4>🔧 ${recurso.Name || 'Sin nombre'}</h4>
                     <p><strong>Nº:</strong> ${recurso.No_}</p>
-                    <p><strong>Estado:</strong> ${recurso.tiene_incidencia && recurso.total_incidencias > 0 ? '🚨 Con incidencias' : recurso.total_campanas > 0 ? '📋 Con campañas' : '✅ Sin problemas'}</p>
-                    <p><strong>Total campañas:</strong> ${recurso.total_campanas || 0}</p>
-                    <p><strong>Total incidencias:</strong> ${recurso.total_incidencias || 0}</p>
                     <p style="color: red;"><em>Error cargando detalles</em></p>
-                    <p style="color: #666; font-size: 11px;">
-                        <strong>Debug:</strong><br>
-                        ID: ${recurso.No_}<br>
-                        Error: ${error.message || 'Error desconocido'}
-                    </p>
+                    <p style="color: #666; font-size: 11px;">${error.message || 'Error desconocido'}</p>
+                    ${getIncidenciasBotonesHtml('', recurso.No_)}
                 </div>
             `;
             marker.setPopupContent(errorTooltip);
+        } finally {
+            recursoDetallesCargando = false;
         }
     });
 }
@@ -866,6 +1007,8 @@ function initMap() {
         attribution: '© OpenStreetMap contributors'
     }).addTo(map);
     
+    initIncidenciasPopupDelegation();
+
     console.log('✅ Mapa inicializado correctamente');
 }
 
@@ -1325,6 +1468,33 @@ async function loadRecursosData(data) {
 }
 
 // Función auxiliar para cargar datos de mobiliario
+function crearMarcadorMobiliario(mobiliario, distanciaKm) {
+    if (!mobiliario.PuntoX || !mobiliario.PuntoY) return null;
+
+    const color = mobiliario.tiene_incidencia ? '#ff8800' : '#4488ff';
+    const busIcon = L.divIcon({
+        className: 'custom-bus-icon',
+        html: `<div style="background-color:${color};color:white;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:bold;border:2px solid white;box-shadow:0 2px 4px rgba(0,0,0,0.3);">🚌</div>`,
+        iconSize: [24, 24],
+        iconAnchor: [12, 12]
+    });
+    const marker = L.marker([mobiliario.PuntoY, mobiliario.PuntoX], { icon: busIcon });
+    const distTxt = distanciaKm != null ? `<p><strong>Distancia:</strong> ${Number(distanciaKm).toFixed(2)} km</p>` : '';
+    const simpleTooltip = `
+        <div style="max-width:350px;padding:5px;">
+            <h4>🚌 ${mobiliario.Descripción || 'Parada'}</h4>
+            <p><strong>Nº Emplazamiento:</strong> ${mobiliario['Nº Emplazamiento']}</p>
+            ${mobiliario.Dirección ? `<p><strong>Dirección:</strong> ${mobiliario.Dirección}</p>` : ''}
+            <p><strong>Estado:</strong> ${mobiliario.tiene_incidencia ? '⚠️ Con incidencias' : '✅ Sin incidencias'}</p>
+            ${distTxt}
+            ${getIncidenciasBotonesHtml(String(mobiliario['Nº Emplazamiento'] || ''), '')}
+            <p style="font-size:12px;color:#666;margin-top:8px;"><em>Carga mobiliario completo para ver incidencias detalladas</em></p>
+        </div>`;
+    marker.bindPopup(simpleTooltip, { maxWidth: 420 });
+    setupPopupIncidenciaButtons(marker);
+    return marker;
+}
+
 async function loadMobiliarioData(data) {
     mobiliarioLayer = L.layerGroup();
     
@@ -1338,257 +1508,8 @@ async function loadMobiliarioData(data) {
         const batch = data.datos.slice(i, i + batchSize);
         
         batch.forEach(mobiliario => {
-            if (mobiliario.PuntoX && mobiliario.PuntoY) {
-                // Crear icono de parada de autobús optimizado
-                const color = mobiliario.tiene_incidencia ? '#ff8800' : '#4488ff';
-                
-                const busIcon = L.divIcon({
-                    className: 'custom-bus-icon',
-                    html: `<div style="
-                        background-color: ${color};
-                        color: white;
-                        width: 24px;
-                        height: 24px;
-                        border-radius: 50%;
-                        display: flex;
-                        align-items: center;
-                        justify-content: center;
-                        font-size: 12px;
-                        font-weight: bold;
-                        border: 2px solid white;
-                        box-shadow: 0 2px 4px rgba(0,0,0,0.3);
-                    ">🚌</div>`,
-                    iconSize: [24, 24],
-                    iconAnchor: [12, 12]
-                });
-                
-                const marker = L.marker([mobiliario.PuntoY, mobiliario.PuntoX], {
-                    icon: busIcon
-                });
-            
-            // Crear tooltip simple inicial (solo información básica)
-            const simpleTooltip = `
-                <div style="max-width: 350px; padding: 5px;">
-                    <h4>🪑 ${mobiliario.Descripción || 'Sin descripción'}</h4>
-                    <p><strong>Nº:</strong> ${mobiliario['Nº Emplazamiento']}</p>
-                    <p><strong>Estado:</strong> ${mobiliario.tiene_incidencia ? '⚠️ Con incidencias' : '✅ Sin incidencias'}</p>
-                    <p><strong>Incidencias:</strong> ${mobiliario.total_incidencias}</p>
-                    
-                    <!-- Mapa de Ubicación Simple -->
-                    <div style="margin: 10px 0; text-align: center;">
-                        <h5 style="margin: 5px 0; font-size: 14px;">🌍 Ubicación</h5>
-                        <div style="position: relative; width: 320px; height: 150px; border: 1px solid #ccc; border-radius: 5px; overflow: hidden; background: #f0f0f0;">
-                            <!-- Intentar Street View primero -->
-                            <img 
-                                decoding="async" 
-                                src="https://maps.googleapis.com/maps/api/streetview?size=320x150&location=${parseFloat(mobiliario.PuntoY).toFixed(6)},${parseFloat(mobiliario.PuntoX).toFixed(6)}&heading=0&pitch=0&fov=90&key=AIzaSyDw_VuMVhBi6Yj0fWVZTpf32DxjpnjbCno" 
-                                style="width: 100%; height: 100%; object-fit: cover;"
-                                onerror="this.style.display='none'; this.nextElementSibling.style.display='block';"
-                                alt="Street View de la parada de autobús">
-                            
-                            <!-- Fallback: Mapa normal si no hay Street View -->
-                            <div style="display: none; width: 100%; height: 100%;">
-                                <iframe 
-                                    width="100%" 
-                                    height="100%" 
-                                    frameborder="0" 
-                                    style="border: none;"
-                                    src="https://www.google.com/maps/embed/v1/view?center=${parseFloat(mobiliario.PuntoY).toFixed(6)},${parseFloat(mobiliario.PuntoX).toFixed(6)}&zoom=18&maptype=satellite&key=AIzaSyDw_VuMVhBi6Yj0fWVZTpf32DxjpnjbCno"
-                                    allowfullscreen>
-                                </iframe>
-                            </div>
-                            
-                            <!-- Overlay con información de la parada -->
-                            <div style="position: absolute; top: 5px; left: 5px; background: rgba(0,0,0,0.7); color: white; padding: 6px; border-radius: 3px; font-size: 11px; max-width: 150px;">
-                                <strong>🚌 ${mobiliario['Nº Emplazamiento']}</strong><br>
-                                <small>${mobiliario.Descripción || 'Parada'}</small>
-                            </div>
-                        </div>
-                        <p style="font-size: 11px; color: #666; margin-top: 3px;">
-                            <a href="https://www.google.com/maps/search/?api=1&query=Parada Bus ${mobiliario['Nº Emplazamiento']} - ${mobiliario.Descripción || mobiliario.Dirección || `${mobiliario.PuntoY},${mobiliario.PuntoX}`} - Palma de Mallorca" 
-                               target="_blank" 
-                               style="color: #007bff; text-decoration: none;">
-                                🔗 Google Maps
-                            </a>
-                            <span style="margin: 0 8px;">|</span>
-                            <a href="https://www.google.com/maps/search/?api=1&query=Parada Bus ${mobiliario['Nº Emplazamiento']} - ${mobiliario.Descripción || mobiliario.Dirección || `${mobiliario.PuntoY},${mobiliario.PuntoX}`} - Palma de Mallorca&t=h" 
-                               target="_blank" 
-                               style="color: #ff6b35; text-decoration: none;">
-                                🚶 Street View
-                            </a>
-                        </p>
-                    </div>
-                    
-                    <p style="text-align: center; margin-top: 5px; font-size: 12px; color: #666;">
-                        <em>Haz clic para ver detalles completos</em>
-                    </p>
-                </div>
-            `;
-            
-            // Usar tooltip simple inicialmente
-            marker.bindPopup(simpleTooltip);
-            
-            // Crear tooltip completo solo cuando se necesite
-            marker.on('click', async function() {
-                // Mostrar tooltip de carga
-                const loadingTooltip = `
-                    <div style="max-width: 300px; padding: 10px; text-align: center;">
-                        <h4>🪑 ${mobiliario.Descripción || 'Sin descripción'}</h4>
-                        <p>Cargando incidencias...</p>
-                        <div style="border: 2px solid #f3f3f3; border-top: 2px solid #3498db; border-radius: 50%; width: 20px; height: 20px; animation: spin 1s linear infinite; margin: 10px auto;"></div>
-                    </div>
-                `;
-                marker.setPopupContent(loadingTooltip);
-                
-                try {
-                    // Cargar incidencias desde el API
-                    console.log(`🔍 Cargando incidencias para emplazamiento: ${mobiliario['Nº Emplazamiento']}`);
-                    const url = `/api/mobiliario/${mobiliario['Nº Emplazamiento']}/incidencias`;
-                    console.log(`📡 URL de petición: ${url}`);
-                    
-                    const response = await fetch(url);
-                    console.log(`📡 Respuesta recibida:`, response.status, response.statusText);
-                    
-                    const data = await response.json();
-                    console.log(`📊 Datos de incidencias recibidos:`, data);
-                    
-                    // Obtener las incidencias de la respuesta (puede estar en data.incidencias o data.datos)
-                    const incidencias = data.incidencias || data.datos || [];
-                    const totalIncidencias = data.total_incidencias || incidencias.length || 0;
-                    
-                    let tooltipContent = `
-                        <div style="max-width: 400px; max-height: 500px; overflow-y: auto; padding: 5px;">
-                            <h4>🪑 Mobiliario: ${mobiliario.Descripción || 'Sin descripción'}</h4>
-                            <p><strong>Nº Emplazamiento:</strong> ${mobiliario['Nº Emplazamiento']}</p>
-                            <p><strong>Tipo:</strong> ${mobiliario.Tipo || 'N/A'}</p>
-                            <p><strong>Tipo Parada:</strong> ${mobiliario['Tipo Parada'] || 'N/A'}</p>
-                            <!--<p><strong>Coordenadas:</strong> ${mobiliario.PuntoX}, ${mobiliario.PuntoY}</p>-->
-                            ${mobiliario.geocodificado ? '<p><strong>📍 Ubicación:</strong> <em>Geocodificada desde dirección de Mallorca</em></p>' : ''}
-                            ${mobiliario.Dirección ? `<p><strong>Dirección (Mallorca):</strong> ${mobiliario.Dirección}</p>` : ''}
-                            <p><strong>Estado:</strong> ${mobiliario.tiene_incidencia ? '⚠️ Con incidencias' : '✅ Sin incidencias'}</p>
-                            <p><strong>Total incidencias:</strong> ${totalIncidencias}</p>
-                            
-                    <!-- Mapa de Ubicación -->
-                    <div style="margin: 10px 0; text-align: center;">
-                        <h5>🌍 Ubicación en el Mapa</h5>
-                        <div style="position: relative; width: 350px; height: 200px; border: 1px solid #ccc; border-radius: 5px; overflow: hidden; background: #f0f0f0;">
-                            <!-- Intentar Street View primero -->
-                            <img 
-                                decoding="async" 
-                                src="https://maps.googleapis.com/maps/api/streetview?size=350x200&location=${parseFloat(mobiliario.PuntoY).toFixed(6)},${parseFloat(mobiliario.PuntoX).toFixed(6)}&heading=0&pitch=0&fov=90&key=AIzaSyDw_VuMVhBi6Yj0fWVZTpf32DxjpnjbCno" 
-                                style="width: 100%; height: 100%; object-fit: cover;"
-                                onerror="this.style.display='none'; this.nextElementSibling.style.display='block';"
-                                alt="Street View de la parada de autobús">
-                            
-                            <!-- Fallback: Vista satelital si no hay Street View-->
-                            <div style="display: none; width: 100%; height: 100%;">
-                                <iframe 
-                                    width="100%" 
-                                    height="100%" 
-                                    frameborder="0" 
-                                    style="border: none;"
-                                    src="https://www.google.com/maps/embed/v1/view?center=${parseFloat(mobiliario.PuntoY).toFixed(6)},${parseFloat(mobiliario.PuntoX).toFixed(6)}&zoom=18&maptype=satellite&key=AIzaSyDw_VuMVhBi6Yj0fWVZTpf32DxjpnjbCno"
-                                    allowfullscreen>
-                                </iframe>
-                            </div> 
-                            
-                            <!-- Overlay con información de la parada -->
-                            <!--<div style="position: absolute; top: 10px; left: 10px; background: rgba(0,0,0,0.7); color: white; padding: 8px; border-radius: 4px; font-size: 12px; max-width: 200px;">
-                                <strong>🚌 Parada ${mobiliario['Nº Emplazamiento']}</strong><br>
-                                ${mobiliario.Descripción || 'Sin descripción'}<br>
-                                <small>Coordenadas: ${parseFloat(mobiliario.PuntoY).toFixed(6)}, ${parseFloat(mobiliario.PuntoX).toFixed(6)}</small>
-                            </div>-->
-                        </div>
-                        <p style="font-size: 12px; color: #666; margin-top: 5px;">
-                            <a href="https://www.google.com/maps/search/?api=1&query=Parada Bus ${mobiliario['Nº Emplazamiento']} - ${mobiliario.Descripción || '@${parseFloat(mobiliario.PuntoX)-0.001},@${parseFloat(mobiliario.PuntoY)-0.001}'} - Palma de Mallorca" 
-                               target="_blank" 
-                               style="color: #007bff; text-decoration: none;">
-                                🔗 Abrir en Google Maps
-                            </a>
-                            <span style="margin: 0 10px;">|</span>
-                            <a href="https://www.google.com/maps/search/?api=1&query=Parada Bus ${mobiliario['Nº Emplazamiento']} - ${mobiliario.Descripción || mobiliario.Dirección || `${mobiliario.PuntoY},${mobiliario.PuntoX}`} - Palma de Mallorca&t=h" 
-                               target="_blank" 
-                               style="color: #ff6b35; text-decoration: none;">
-                                🚶 Street View
-                            </a>
-                            <span style="margin: 0 10px;">|</span>
-                            <a href="https://www.openstreetmap.org/?mlat=${mobiliario.PuntoY}&mlon=${mobiliario.PuntoX}&zoom=18" 
-                               target="_blank" 
-                               style="color: #28a745; text-decoration: none;">
-                                🗺️ OpenStreetMap
-                            </a>
-                        </p>
-                    </div>
-                    `;
-                    
-                    if (mobiliario.SAE) {
-                        tooltipContent += `<p><strong>SAE:</strong> ${mobiliario.SAE}</p>`;
-                    }
-                    if (mobiliario.Operario) {
-                        tooltipContent += `<p><strong>Operario:</strong> ${mobiliario.Operario}</p>`;
-                    }
-                    if (mobiliario['Zona Limpieza']) {
-                        tooltipContent += `<p><strong>Zona Limpieza:</strong> ${mobiliario['Zona Limpieza']}</p>`;
-                    }
-                    
-                    if (incidencias && incidencias.length > 0) {
-                        tooltipContent += `<h5>🚨 Incidencias (${incidencias.length}):</h5>`;
-                        
-                        // Agrupar incidencias por tipo
-                        const incidenciasPorTipo = {};
-                        incidencias.forEach(incidencia => {
-                            const tipo = incidencia.Tipo || 'Sin tipo';
-                            if (!incidenciasPorTipo[tipo]) {
-                                incidenciasPorTipo[tipo] = [];
-                            }
-                            incidenciasPorTipo[tipo].push(incidencia);
-                        });
-                        
-                        // Mostrar resumen por tipo
-                        Object.keys(incidenciasPorTipo).forEach(tipo => {
-                            const incidenciasTipo = incidenciasPorTipo[tipo];
-                            const fechas = incidenciasTipo.map(i => i.Fecha).filter(f => f).sort();
-                            const desde = fechas.length > 0 ? formatearFecha(fechas[0]) : 'Sin fecha';
-                            const hasta = fechas.length > 0 ? formatearFecha(fechas[fechas.length - 1]) : 'Sin fecha';
-                            
-                            tooltipContent += `<div style="margin-bottom: 8px; padding: 5px; background-color: #fff3cd; border-left: 3px solid #ffc107;">`;
-                            tooltipContent += `<strong>Tipo:</strong> ${tipo}<br>`;
-                            tooltipContent += `<strong>Cantidad:</strong> ${incidenciasTipo.length}<br>`;
-                            tooltipContent += `<strong>Desde:</strong> ${desde}<br>`;
-                            tooltipContent += `<strong>Hasta:</strong> ${hasta}<br>`;
-                            tooltipContent += `</div>`;
-                        });
-                    } else {
-                        tooltipContent += `<p><em>No hay incidencias registradas</em></p>`;
-                    }
-                    
-                    tooltipContent += `</div>`;
-                    marker.setPopupContent(tooltipContent);
-                    
-                } catch (error) {
-                    console.error('Error cargando incidencias:', error);
-                    console.error('Emplazamiento ID:', mobiliario['Nº Emplazamiento']);
-                    console.error('URL de petición:', `/api/mobiliario/${mobiliario['Nº Emplazamiento']}/incidencias`);
-                    
-                    const errorTooltip = `
-                        <div style="max-width: 300px; padding: 10px;">
-                            <h4>🪑 ${mobiliario.Descripción || 'Sin descripción'}</h4>
-                            <p><strong>Nº Emplazamiento:</strong> ${mobiliario['Nº Emplazamiento']}</p>
-                            <p><strong>Estado:</strong> ${mobiliario.tiene_incidencia ? '⚠️ Con incidencias' : '✅ Sin incidencias'}</p>
-                            <p><strong>Total incidencias:</strong> ${mobiliario.total_incidencias}</p>
-                            <p style="color: red;"><em>Error cargando detalles de incidencias</em></p>
-                            <p style="color: #666; font-size: 11px;">
-                                <strong>Debug:</strong><br>
-                                ID: ${mobiliario['Nº Emplazamiento']}<br>
-                                Error: ${error.message || 'Error desconocido'}
-                            </p>
-                        </div>
-                    `;
-                    marker.setPopupContent(errorTooltip);
-                }
-            });
-            mobiliarioLayer.addLayer(marker);
-        }
+            const marker = crearMarcadorMobiliario(mobiliario);
+            if (marker) mobiliarioLayer.addLayer(marker);
         });
         
         // Mostrar progreso
@@ -1956,6 +1877,8 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Verificar el estado de la aplicación
     checkHealth();
+    initIncidenciasAuth();
+    initAddressPickerModal();
     
     // Cargar tipos de lugares disponibles
     loadPlaceTypes();
@@ -1985,6 +1908,10 @@ document.addEventListener('DOMContentLoaded', function() {
     document.getElementById('searchByPlace').addEventListener('click', searchByPlace);
     document.getElementById('searchByCoordinates').addEventListener('click', searchByCoordinates);
     document.getElementById('searchByAddress').addEventListener('click', searchByAddress);
+    document.getElementById('searchByStop').addEventListener('click', searchByStop);
+    document.getElementById('searchMobiliarioByPlace').addEventListener('click', searchMobiliarioByPlace);
+    document.getElementById('searchMobiliarioByCoordinates').addEventListener('click', searchMobiliarioByCoordinates);
+    document.getElementById('searchMobiliarioByAddress').addEventListener('click', searchMobiliarioByAddress);
     document.getElementById('searchByZone').addEventListener('click', searchByZone);
     document.getElementById('useCurrentLocation').addEventListener('click', useCurrentLocation);
     document.getElementById('cancelSearch').addEventListener('click', cancelSearch);
@@ -2271,48 +2198,338 @@ async function searchByAddress() {
     const address = document.getElementById('addressInput').value.trim();
     const radius = parseFloat(document.getElementById('addressRadius').value);
     
-    console.log('📍 Dirección:', address);
-    console.log('📍 Radio:', radius);
-    
     if (!address) {
-        console.log('❌ No hay dirección introducida');
         showNotification('Por favor introduce una dirección', 'error');
         return;
     }
     
     if (!radius || radius <= 0 || radius > 50) {
-        console.log('❌ Radio inválido');
         showNotification('Por favor introduce un radio válido entre 0.1 y 50 km', 'error');
         return;
     }
     
-    console.log('✅ Validaciones pasadas, iniciando búsqueda...');
-    
     try {
-        showNotification(`Geocodificando dirección y buscando recursos en un radio de ${radius} km...`, 'info');
-        
-        const url = addFechasToUrl(`/api/recursos-cerca-direccion?direccion=${encodeURIComponent(address)}&radio=${radius}`);
-        const response = await fetch(url);
-        const data = await response.json();
-        
-        if (data.error) {
-            throw new Error(data.error);
+        showNotification('Geocodificando dirección...', 'info');
+
+        const geoUrl = `/api/geocodificar-direccion?direccion=${encodeURIComponent(address)}`;
+        const geoResponse = await fetch(geoUrl);
+        const geoData = await geoResponse.json();
+
+        if (!geoResponse.ok || geoData.error) {
+            throw new Error(geoData.error || 'No se pudo geocodificar la dirección');
         }
-        
-        displaySearchResults(data, 'address', { 
-            lat: data.coordenadas_encontradas.lat, 
-            lon: data.coordenadas_encontradas.lon, 
-            radius,
-            address: data.direccion_buscada
-        });
-        console.log('✅ Resultados mostrados');
-        
+
+        if (geoData.multiple && geoData.resultados && geoData.resultados.length > 1) {
+            showAddressPickerModal(geoData.resultados, address, radius, executeAddressSearch);
+            return;
+        }
+
+        const seleccion = geoData.resultados[0];
+        await executeAddressSearch(address, radius, seleccion.lat, seleccion.lon, seleccion.direccion);
     } catch (error) {
         console.error('❌ Error en búsqueda por dirección:', error);
         showNotification(`Error: ${error.message}`, 'error');
     }
-    
-    console.log('✅ Búsqueda por dirección completada');
+}
+
+async function executeAddressSearch(originalAddress, radius, lat, lon, formattedAddress) {
+    showNotification(`Buscando recursos en un radio de ${radius} km...`, 'info');
+
+    let url = `/api/recursos-cerca-direccion?direccion=${encodeURIComponent(originalAddress)}&radio=${radius}&lat=${lat}&lon=${lon}`;
+    if (formattedAddress) {
+        url += `&direccion_formateada=${encodeURIComponent(formattedAddress)}`;
+    }
+    url = addFechasToUrl(url);
+
+    const response = await fetch(url);
+    const data = await response.json();
+
+    if (data.error) {
+        throw new Error(data.error);
+    }
+
+    displaySearchResults(data, 'address', {
+        lat: data.coordenadas_encontradas.lat,
+        lon: data.coordenadas_encontradas.lon,
+        radius,
+        address: data.direccion_formateada || formattedAddress || data.direccion_buscada
+    });
+}
+
+function closeAddressPickerModal() {
+    const modal = document.getElementById('addressPickerModal');
+    if (modal) modal.style.display = 'none';
+}
+
+function showAddressPickerModal(resultados, originalAddress, radius, onSelect) {
+    const modal = document.getElementById('addressPickerModal');
+    const intro = document.getElementById('addressPickerIntro');
+    const list = document.getElementById('addressPickerList');
+    if (!modal || !intro || !list) return;
+
+    const selectHandler = onSelect || executeAddressSearch;
+    intro.textContent = `Se han encontrado ${resultados.length} coincidencias para «${originalAddress}». Elige la correcta:`;
+    list.innerHTML = '';
+
+    resultados.forEach((item) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'address-picker-item';
+        btn.innerHTML = `
+            <div class="address-picker-item-title">${item.direccion || 'Sin descripción'}</div>
+            <div class="address-picker-item-coords">${Number(item.lat).toFixed(6)}, ${Number(item.lon).toFixed(6)}</div>
+        `;
+        btn.addEventListener('click', async () => {
+            closeAddressPickerModal();
+            try {
+                await selectHandler(originalAddress, radius, item.lat, item.lon, item.direccion);
+            } catch (error) {
+                console.error('❌ Error tras elegir dirección:', error);
+                showNotification(`Error: ${error.message}`, 'error');
+            }
+        });
+        list.appendChild(btn);
+    });
+
+    modal.style.display = 'flex';
+}
+
+function initAddressPickerModal() {
+    const closeBtn = document.getElementById('closeAddressPickerModal');
+    const cancelBtn = document.getElementById('cancelAddressPicker');
+    const modal = document.getElementById('addressPickerModal');
+
+    if (closeBtn) closeBtn.addEventListener('click', closeAddressPickerModal);
+    if (cancelBtn) cancelBtn.addEventListener('click', closeAddressPickerModal);
+    if (modal) {
+        modal.addEventListener('click', (e) => {
+            if (e.target === modal) closeAddressPickerModal();
+        });
+    }
+}
+
+async function searchMobiliarioNearPoint(lat, lon, radius, searchType, extraParams = {}) {
+    showNotification(`Buscando mobiliario en un radio de ${radius} km...`, 'info');
+
+    const url = addFechasToUrl(`/api/mobiliario-cerca-coordenadas?lat=${lat}&lon=${lon}&radio=${radius}`);
+    const response = await fetch(url);
+    const data = await response.json();
+
+    if (data.error) {
+        throw new Error(data.error);
+    }
+
+    displayMobiliarioSearchResults(data, searchType, { lat, lon, radius, ...extraParams });
+}
+
+async function searchMobiliarioByPlace() {
+    const radius = parseFloat(document.getElementById('placeRadius').value);
+
+    if (!radius || radius <= 0 || radius > 50) {
+        showNotification('Por favor introduce un radio válido entre 0.1 y 50 km', 'error');
+        return;
+    }
+
+    const savedLocation = getSavedLocation();
+    if (savedLocation) {
+        try {
+            await searchMobiliarioNearPoint(savedLocation.lat, savedLocation.lon, radius, 'place');
+        } catch (error) {
+            console.error('Error en búsqueda de mobiliario por lugar:', error);
+            showNotification(`Error: ${error.message}`, 'error');
+        }
+        return;
+    }
+
+    showNotification('🎯 Haz clic en el mapa para seleccionar el punto de búsqueda de mobiliario', 'info');
+    map.getContainer().style.cursor = 'crosshair';
+    document.getElementById('cancelSearch').style.display = 'inline-block';
+
+    const clickHandler = async function(e) {
+        map.off('click', clickHandler);
+        map.getContainer().style.cursor = '';
+        document.getElementById('cancelSearch').style.display = 'none';
+        currentClickHandler = null;
+
+        try {
+            await searchMobiliarioNearPoint(e.latlng.lat, e.latlng.lng, radius, 'place');
+        } catch (error) {
+            console.error('Error en búsqueda de mobiliario por lugar:', error);
+            showNotification(`Error: ${error.message}`, 'error');
+        }
+    };
+
+    currentClickHandler = clickHandler;
+    map.on('click', clickHandler);
+}
+
+async function searchMobiliarioByCoordinates() {
+    const lat = parseFloat(document.getElementById('coordLat').value);
+    const lon = parseFloat(document.getElementById('coordLon').value);
+    const radius = parseFloat(document.getElementById('coordRadius').value);
+
+    if (isNaN(lat) || isNaN(lon)) {
+        showNotification('Por favor introduce coordenadas válidas', 'error');
+        return;
+    }
+
+    if (!radius || radius <= 0 || radius > 50) {
+        showNotification('Por favor introduce un radio válido entre 0.1 y 50 km', 'error');
+        return;
+    }
+
+    try {
+        await searchMobiliarioNearPoint(lat, lon, radius, 'coordinates');
+    } catch (error) {
+        console.error('Error en búsqueda de mobiliario por coordenadas:', error);
+        showNotification(`Error: ${error.message}`, 'error');
+    }
+}
+
+async function searchMobiliarioByAddress() {
+    const address = document.getElementById('addressInput').value.trim();
+    const radius = parseFloat(document.getElementById('addressRadius').value);
+
+    if (!address) {
+        showNotification('Por favor introduce una dirección', 'error');
+        return;
+    }
+
+    if (!radius || radius <= 0 || radius > 50) {
+        showNotification('Por favor introduce un radio válido entre 0.1 y 50 km', 'error');
+        return;
+    }
+
+    try {
+        showNotification('Geocodificando dirección...', 'info');
+
+        const geoUrl = `/api/geocodificar-direccion?direccion=${encodeURIComponent(address)}`;
+        const geoResponse = await fetch(geoUrl);
+        const geoData = await geoResponse.json();
+
+        if (!geoResponse.ok || geoData.error) {
+            throw new Error(geoData.error || 'No se pudo geocodificar la dirección');
+        }
+
+        if (geoData.multiple && geoData.resultados && geoData.resultados.length > 1) {
+            showAddressPickerModal(geoData.resultados, address, radius, executeMobiliarioAddressSearch);
+            return;
+        }
+
+        const seleccion = geoData.resultados[0];
+        await executeMobiliarioAddressSearch(address, radius, seleccion.lat, seleccion.lon, seleccion.direccion);
+    } catch (error) {
+        console.error('Error en búsqueda de mobiliario por dirección:', error);
+        showNotification(`Error: ${error.message}`, 'error');
+    }
+}
+
+async function executeMobiliarioAddressSearch(originalAddress, radius, lat, lon, formattedAddress) {
+    showNotification(`Buscando mobiliario en un radio de ${radius} km...`, 'info');
+
+    let url = `/api/mobiliario-cerca-direccion?direccion=${encodeURIComponent(originalAddress)}&radio=${radius}&lat=${lat}&lon=${lon}`;
+    if (formattedAddress) {
+        url += `&direccion_formateada=${encodeURIComponent(formattedAddress)}`;
+    }
+    url = addFechasToUrl(url);
+
+    const response = await fetch(url);
+    const data = await response.json();
+
+    if (data.error) {
+        throw new Error(data.error);
+    }
+
+    displayMobiliarioSearchResults(data, 'address', {
+        lat: data.coordenadas_encontradas.lat,
+        lon: data.coordenadas_encontradas.lon,
+        radius,
+        address: data.direccion_formateada || formattedAddress || data.direccion_buscada
+    });
+}
+
+async function searchByStop() {
+    const numero = document.getElementById('stopNumberInput').value.trim();
+
+    if (!numero) {
+        showNotification('Indique el número de parada', 'error');
+        return;
+    }
+
+    try {
+        showNotification(`Buscando parada ${numero}...`, 'info');
+
+        const url = addFechasToUrl(`/api/parada?numero=${encodeURIComponent(numero)}`);
+        const response = await fetch(url);
+        const data = await response.json();
+
+        if (!response.ok || data.error) {
+            throw new Error(data.error || 'Parada no encontrada');
+        }
+
+        if (data.multiple && data.paradas && data.paradas.length > 1) {
+            showParadaPickerModal(data.paradas, numero);
+            return;
+        }
+
+        mostrarParadaEnMapa(data.paradas[0]);
+    } catch (error) {
+        console.error('Error buscando parada:', error);
+        showNotification(`Error: ${error.message}`, 'error');
+    }
+}
+
+function showParadaPickerModal(paradas, numeroBuscado) {
+    const modal = document.getElementById('addressPickerModal');
+    const intro = document.getElementById('addressPickerIntro');
+    const list = document.getElementById('addressPickerList');
+    if (!modal || !intro || !list) return;
+
+    intro.textContent = `Se encontraron ${paradas.length} paradas para «${numeroBuscado}». Elige una:`;
+    list.innerHTML = '';
+
+    paradas.forEach((parada) => {
+        const btn = document.createElement('button');
+        btn.type = 'button';
+        btn.className = 'address-picker-item';
+        const coords = (parada.PuntoY && parada.PuntoX)
+            ? `${Number(parada.PuntoY).toFixed(6)}, ${Number(parada.PuntoX).toFixed(6)}`
+            : 'Sin coordenadas';
+        btn.innerHTML = `
+            <div class="address-picker-item-title">Nº ${parada['Nº Emplazamiento']} — ${parada.Descripción || 'Sin descripción'}</div>
+            <div class="address-picker-item-coords">${parada.Dirección || ''} ${coords}</div>
+        `;
+        btn.addEventListener('click', () => {
+            closeAddressPickerModal();
+            mostrarParadaEnMapa(parada);
+        });
+        list.appendChild(btn);
+    });
+
+    modal.style.display = 'flex';
+}
+
+function mostrarParadaEnMapa(parada) {
+    if (!parada || !parada.PuntoX || !parada.PuntoY) {
+        showNotification('La parada no tiene coordenadas válidas', 'error');
+        return;
+    }
+
+    clearSearchResults();
+    searchLayer = L.layerGroup();
+
+    const marker = crearMarcadorMobiliario(parada);
+    if (!marker) {
+        showNotification('No se pudo mostrar la parada en el mapa', 'error');
+        return;
+    }
+
+    searchLayer.addLayer(marker);
+    searchLayer.addTo(map);
+    map.setView([parada.PuntoY, parada.PuntoX], 17);
+    marker.openPopup();
+
+    showNotification(`Parada ${parada['Nº Emplazamiento']} localizada`, 'success');
 }
 
 // Usar ubicación actual
@@ -2895,6 +3112,74 @@ function displaySearchResults(data, searchType, searchParams) {
     console.log('✅ Resumen mostrado');
     
     console.log('✅ Resultados de búsqueda mostrados correctamente');
+}
+
+function displayMobiliarioSearchResults(data, searchType, searchParams) {
+    clearSearchResults();
+
+    currentSearchData = data;
+    currentSearchType = `mobiliario_${searchType}`;
+    searchLayer = L.layerGroup();
+
+    const { lat, lon, radius } = searchParams;
+
+    const searchIcon = L.divIcon({
+        className: 'search-marker',
+        html: '🎯',
+        iconSize: [30, 30],
+        iconAnchor: [15, 15]
+    });
+
+    const tipoLabel = searchType === 'place' ? 'Lugar' : searchType === 'coordinates' ? 'Coordenadas' : 'Dirección';
+    const searchMarker = L.marker([lat, lon], { icon: searchIcon });
+    searchMarker.bindPopup(`
+        <div style="text-align: center;">
+            <h4>🎯 Punto de Búsqueda (Mobiliario)</h4>
+            <p><strong>Tipo:</strong> ${tipoLabel}</p>
+            <p><strong>Coordenadas:</strong> ${lat.toFixed(6)}, ${lon.toFixed(6)}</p>
+            <p><strong>Radio:</strong> ${radius} km</p>
+            ${searchParams.address ? `<p><strong>Dirección:</strong> ${searchParams.address}</p>` : ''}
+        </div>
+    `);
+    searchLayer.addLayer(searchMarker);
+
+    radiusCircle = L.circle([lat, lon], {
+        radius: radius * 1000,
+        color: '#2196f3',
+        weight: 2,
+        dashArray: '5, 5',
+        opacity: 0.7,
+        fillOpacity: 0.1,
+        fillColor: '#2196f3'
+    });
+    searchLayer.addLayer(radiusCircle);
+
+    const mobiliario = data.mobiliario || [];
+    mobiliario.forEach((item) => {
+        const marker = crearMarcadorMobiliario(item, item.distancia_km);
+        if (marker) searchLayer.addLayer(marker);
+    });
+
+    searchLayer.addTo(map);
+
+    if (searchLayer.getLayers().length > 0) {
+        try {
+            const bounds = searchLayer.getBounds();
+            if (bounds && bounds.isValid && bounds.isValid()) {
+                map.fitBounds(bounds.pad(0.1));
+            }
+        } catch (error) {
+            console.warn('Error ajustando vista del mapa:', error);
+            map.setView([lat, lon], 13);
+        }
+    } else {
+        map.setView([lat, lon], 13);
+    }
+
+    showNotification(
+        `✓ Mobiliario: ${mobiliario.length} parada(s) encontrada(s) en ${radius} km`,
+        'success'
+    );
 }
 
 // Limpiar resultados de búsqueda

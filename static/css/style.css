@@ -232,6 +232,11 @@ footer {
     }
 }
 
+/* Filtro familia: oculto temporalmente (quitar .filtro-familia-oculto del HTML para reactivar) */
+.filtro-familia-oculto {
+    display: none !important;
+}
+
 /* Estilos para el mapa */
 .leaflet-popup-content {
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
@@ -633,6 +638,53 @@ label[for*="Radius"] {
     border-radius: 0 0 10px 10px;
 }
 
+.address-picker-modal {
+    max-width: 560px;
+    width: 95%;
+}
+
+.address-picker-intro {
+    margin-bottom: 0.75rem;
+    color: #475569;
+    font-size: 0.95rem;
+}
+
+.address-picker-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    max-height: 50vh;
+    overflow-y: auto;
+}
+
+.address-picker-item {
+    width: 100%;
+    text-align: left;
+    padding: 0.75rem 1rem;
+    border: 1px solid #e2e8f0;
+    border-radius: 8px;
+    background: #fff;
+    cursor: pointer;
+    transition: background 0.15s, border-color 0.15s, box-shadow 0.15s;
+}
+
+.address-picker-item:hover {
+    background: #f8fafc;
+    border-color: #667eea;
+    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.15);
+}
+
+.address-picker-item-title {
+    font-weight: 600;
+    color: #1e293b;
+    margin-bottom: 0.25rem;
+}
+
+.address-picker-item-coords {
+    font-size: 0.8rem;
+    color: #64748b;
+}
+
 /* Estilos para controles de zona */
 .zone-instructions {
     background-color: #e9ecef;
@@ -765,4 +817,100 @@ label[for*="Radius"] {
         flex-direction: column;
         gap: 0.5rem;
     }
+}
+
+/* Botones incidencias / GTask en popups (como Rutas) */
+.popup-incidencias-botones {
+    margin-top: 12px;
+    padding-top: 10px;
+    border-top: 1px solid #ddd;
+}
+
+.popup-botones {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+    flex-wrap: wrap;
+    pointer-events: auto;
+}
+
+.leaflet-popup-content .popup-incidencias-botones,
+.leaflet-popup-content .popup-incidencias-botones button {
+    pointer-events: auto;
+    cursor: pointer;
+}
+
+.btn-card-icon {
+    width: 44px;
+    height: 44px;
+    padding: 0;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.btn-card-icon:hover {
+    transform: scale(1.05);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+}
+
+.btn-card-incidencia {
+    background: #fff;
+    color: #333;
+    border: 1px solid #e5e7eb;
+}
+
+.btn-card-incidencia .btn-icon-img {
+    width: 28px;
+    height: 28px;
+    object-fit: contain;
+}
+
+.btn-card-tarea {
+    background: transparent;
+}
+
+.gtask-logo-mini {
+    position: relative;
+    width: 44px;
+    height: 44px;
+    font-size: 0;
+}
+
+.gtask-logo-mini .gtask-square {
+    position: absolute;
+    border-radius: 8px;
+    width: 26px;
+    height: 26px;
+}
+
+.gtask-logo-mini .gtask-square-1 {
+    background: #7B2CBF;
+    bottom: 0;
+    left: 0;
+    z-index: 1;
+}
+
+.gtask-logo-mini .gtask-square-2 {
+    background: #D63384;
+    top: 0;
+    right: 0;
+    z-index: 2;
+}
+
+.gtask-logo-mini .gtask-plus {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    transform: translate(-50%, -50%);
+    color: white;
+    font-size: 18px;
+    font-weight: bold;
+    z-index: 3;
+    line-height: 1;
 }
