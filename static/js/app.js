@@ -379,6 +379,33 @@ function getIconoPorTipoRecurso(tipoRecurso, color) {
     });
 }
 
+function getRecursoMarkerColor(recurso) {
+    if (recurso.tiene_incidencia && recurso.total_incidencias > 0) return '#ff4444';
+    if (recurso.total_campanas > 0) return '#ff8800';
+    return '#44ff44';
+}
+
+function crearMarcadorRecurso(recurso) {
+    if (recurso.PuntoX == null || recurso.PuntoY == null ||
+        isNaN(recurso.PuntoX) || isNaN(recurso.PuntoY) ||
+        recurso.PuntoX === 0 || recurso.PuntoY === 0) {
+        return null;
+    }
+
+    const lat = parseFloat(recurso.PuntoY);
+    const lng = parseFloat(recurso.PuntoX);
+    if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
+        return null;
+    }
+
+    const tipoRecurso = recurso['Tipo Recurso'] || recurso['TipoRecurso'] || '';
+    const color = getRecursoMarkerColor(recurso);
+    const icono = getIconoPorTipoRecurso(tipoRecurso, color);
+    const marker = L.marker([lat, lng], { icon: icono });
+    crearPopupRecurso(marker, recurso);
+    return marker;
+}
+
 function getFechasFormulario() {
     return {
         fechaDesde: document.getElementById('fechaDesde')?.value || '',
@@ -1107,61 +1134,22 @@ async function loadRecursosData(data) {
         const batch = data.datos.slice(i, i + batchSize);
         
         batch.forEach(recurso => {
-            // Verificar que las coordenadas existan y sean válidas
-            if (recurso.PuntoX != null && recurso.PuntoY != null && 
-                !isNaN(recurso.PuntoX) && !isNaN(recurso.PuntoY) &&
-                recurso.PuntoX !== 0 && recurso.PuntoY !== 0) {
-                
-                // Lógica de colores: Rojo si tiene incidencias, Naranja si tiene campañas, Verde si no tiene nada
-                let color = '#44ff44'; // Verde por defecto
-                if (recurso.tiene_incidencia && recurso.total_incidencias > 0) {
-                    color = '#ff4444'; // Rojo si tiene incidencias
-                } else if (recurso.total_campanas > 0) {
-                    color = '#ff8800'; // Naranja si tiene campañas pero no incidencias
-                }
-                
-                try {
-                    // Validar coordenadas antes de crear el marcador
-                    const lat = parseFloat(recurso.PuntoY);
-                    const lng = parseFloat(recurso.PuntoX);
-                    
-                    if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
-                        console.warn(`Coordenadas inválidas para recurso ${recurso.No_}: (${recurso.PuntoY}, ${recurso.PuntoX})`);
-                        recursosSinCoordenadas++;
-                        return;
-                    }
-                    
-                    // Obtener el tipo de recurso
-                    const tipoRecurso = recurso['Tipo Recurso'] || recurso['TipoRecurso'] || '';
-                    
-                    // Log para los primeros marcadores para verificar qué tipos se están recibiendo
-                    if (marcadoresCreados < 5) {
-                        console.log(`🔍 Recurso ${recurso.No_}: Tipo original="${recurso['Tipo Recurso']}", Tipo usado="${tipoRecurso}"`);
-                    }
-                    
-                    // Obtener el icono según el tipo de recurso
-                    const icono = getIconoPorTipoRecurso(tipoRecurso, color);
-                    
-                    // Crear marcador con icono personalizado
-                    const marker = L.marker([lat, lng], {
-                        icon: icono
-                    });
-                
-                    // Usar función común para crear el popup
-                    crearPopupRecurso(marker, recurso);
-                    
+            try {
+                const marker = crearMarcadorRecurso(recurso);
+                if (marker) {
                     recursosLayer.addLayer(marker);
                     marcadoresCreados++;
-                    
-                    // Mostrar coordenadas de los primeros 3 marcadores para verificación
                     if (marcadoresCreados <= 3) {
                         const markerLatLng = marker.getLatLng();
+                        const tipoRecurso = recurso['Tipo Recurso'] || recurso['TipoRecurso'] || '';
                         console.log(`Marcador ${marcadoresCreados} creado en: (${markerLatLng.lat}, ${markerLatLng.lng}) - Recurso: ${recurso.No_}, Tipo: "${tipoRecurso}"`);
                     }
-                } catch (error) {
-                    console.error(`Error creando marcador para recurso ${recurso.No_}:`, error);
+                } else {
                     recursosSinCoordenadas++;
                 }
+            } catch (error) {
+                console.error(`Error creando marcador para recurso ${recurso.No_}:`, error);
+                recursosSinCoordenadas++;
             }
         });
         
@@ -3262,27 +3250,8 @@ function displaySearchResults(data, searchType, searchParams) {
     // Mostrar recursos encontrados
     if (data.recursos && data.recursos.length > 0) {
         data.recursos.forEach(recurso => {
-            // Usar el mismo estilo que los recursos normales
-            let color = '#44ff44'; // Verde por defecto
-            if (recurso.tiene_incidencia && recurso.total_incidencias > 0) {
-                color = '#ff4444'; // Rojo si tiene incidencias
-            } else if (recurso.total_campanas > 0) {
-                color = '#ff8800'; // Naranja si tiene campañas
-            }
-            
-            const marker = L.circleMarker([recurso.PuntoY, recurso.PuntoX], {
-                radius: 10, // Un poco más grande para destacar
-                fillColor: color,
-                color: '#fff',
-                weight: 3,
-                opacity: 1,
-                fillOpacity: 0.8
-            });
-            
-            // Usar función común para crear el popup
-            crearPopupRecurso(marker, recurso);
-            
-            searchLayer.addLayer(marker);
+            const marker = crearMarcadorRecurso(recurso);
+            if (marker) searchLayer.addLayer(marker);
         });
     }
     
@@ -4605,27 +4574,8 @@ function displayZoneSearchResults(recursos, zone, radius) {
     if (recursos.length > 0) {
         console.log('✅ Mostrando recursos encontrados...');
         recursos.forEach(recurso => {
-            // Usar el mismo estilo que los recursos normales
-            let color = '#44ff44'; // Verde por defecto
-            if (recurso.tiene_incidencia && recurso.total_incidencias > 0) {
-                color = '#ff4444'; // Rojo si tiene incidencias
-            } else if (recurso.total_campanas > 0) {
-                color = '#ff8800'; // Naranja si tiene campañas
-            }
-            
-            const marker = L.circleMarker([recurso.PuntoY, recurso.PuntoX], {
-                radius: 10,
-                fillColor: color,
-                color: '#fff',
-                weight: 3,
-                opacity: 1,
-                fillOpacity: 0.8
-            });
-            
-            // Usar función común para crear el popup
-            crearPopupRecurso(marker, recurso);
-            
-            searchLayer.addLayer(marker);
+            const marker = crearMarcadorRecurso(recurso);
+            if (marker) searchLayer.addLayer(marker);
         });
     }
     
