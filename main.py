@@ -40,6 +40,26 @@ def clean_data(data):
     else:
         return data
 
+MOBILIARIO_CAMPOS = """
+    [Nº Emplazamiento],
+    [Descripción],
+    [Dirección],
+    [Tipo],
+    [Tipo Parada],
+    [Tipo Banco],
+    [SAE],
+    [Opi Instalado],
+    [Banco Madera],
+    [ABA],
+    [Zona Limpieza],
+    [Operario],
+    [Semoan],
+    [PuntoX],
+    [PuntoY],
+    [Zona Crítica],
+    Incidencia
+"""
+
 def get_fechas():
     """
     Obtiene las fechas desde los parámetros de la request.
@@ -1200,22 +1220,8 @@ def get_mobiliario():
         fecha_desde, fecha_hasta = get_fechas()
         
         # Siempre usar MobiliarioPorFechas
-        query = """
-        SELECT 
-            [Nº Emplazamiento],
-            [Descripción],
-            [Tipo],
-            [Tipo Parada],
-            [SAE],
-            [Banco Madera],
-            [ABA],
-            [Zona Limpieza],
-            [Operario],
-            [Semoan],
-            [PuntoX],
-            [PuntoY],
-            [Dirección],
-            Incidencia
+        query = f"""
+        SELECT {MOBILIARIO_CAMPOS}
         FROM [dbo].[MobiliarioPorFechas](?, ?)
         """
         cursor.execute(query, (fecha_desde, fecha_hasta))
@@ -1911,9 +1917,8 @@ def get_mobiliario_cerca_coordenadas():
         fecha_desde, fecha_hasta = get_fechas()
         conn = get_db_connection()
         cursor = conn.cursor()
-        query = """
-        SELECT [Nº Emplazamiento], [Descripción], [Tipo], [Tipo Parada], [SAE],
-               [Zona Limpieza], [Operario], [PuntoX], [PuntoY], [Dirección], Incidencia
+        query = f"""
+        SELECT {MOBILIARIO_CAMPOS}
         FROM [dbo].[MobiliarioPorFechas](?, ?)
         WHERE [PuntoX] != 0 AND [PuntoY] != 0
         """
@@ -1976,9 +1981,8 @@ def get_mobiliario_cerca_direccion():
         conn = get_db_connection()
         cursor = conn.cursor()
         fecha_desde, fecha_hasta = get_fechas()
-        query = """
-        SELECT [Nº Emplazamiento], [Descripción], [Tipo], [Tipo Parada], [SAE],
-               [Zona Limpieza], [Operario], [PuntoX], [PuntoY], [Dirección], Incidencia
+        query = f"""
+        SELECT {MOBILIARIO_CAMPOS}
         FROM [dbo].[MobiliarioPorFechas](?, ?)
         WHERE [PuntoX] != 0 AND [PuntoY] != 0
         """
@@ -2021,9 +2025,8 @@ def buscar_parada():
         fecha_desde, fecha_hasta = get_fechas()
         conn = get_db_connection()
         cursor = conn.cursor()
-        query = """
-        SELECT [Nº Emplazamiento], [Descripción], [Tipo], [Tipo Parada], [SAE],
-               [Zona Limpieza], [Operario], [PuntoX], [PuntoY], [Dirección], Incidencia
+        query = f"""
+        SELECT {MOBILIARIO_CAMPOS}
         FROM [dbo].[MobiliarioPorFechas](?, ?)
         WHERE CAST([Nº Emplazamiento] AS NVARCHAR(50)) = ?
            OR CAST([Nº Emplazamiento] AS NVARCHAR(50)) LIKE ?

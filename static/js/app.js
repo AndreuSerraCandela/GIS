@@ -1468,30 +1468,258 @@ async function loadRecursosData(data) {
 }
 
 // Función auxiliar para cargar datos de mobiliario
+const GOOGLE_MAPS_API_KEY = 'AIzaSyDw_VuMVhBi6Yj0fWVZTpf32DxjpnjbCno';
+
+function esZonaCriticaMobiliario(mobiliario) {
+    const v = mobiliario['Zona Crítica'];
+    return v !== undefined && v !== null && v !== 0 && v !== '0' && v !== '';
+}
+
+function getMobiliarioEstadoTexto(mobiliario) {
+    if (esZonaCriticaMobiliario(mobiliario)) return '🚨 Zona crítica';
+    return mobiliario.tiene_incidencia ? '⚠️ Con incidencias' : '✅ Sin incidencias';
+}
+
+function getTipoParadaInfo(mobiliario) {
+    const rawTipoParada = (mobiliario['Tipo Parada'] || mobiliario.Tipo || '').toString().trim();
+    const tipoLower = rawTipoParada.toLowerCase();
+    const extraText = (
+        (mobiliario['Tipo Banco'] || '') + ' ' +
+        (mobiliario['Banco Madera'] || '') + ' ' +
+        (mobiliario['Descripción'] || '')
+    ).toString().toLowerCase();
+    const palLiRegex = /pal\s*-\s*li|pal\s*li|pal-li/;
+
+    if (palLiRegex.test(tipoLower) || palLiRegex.test(extraText)) {
+        return { base: 'P', badge: '*', family: 'pal-li', raw: rawTipoParada };
+    }
+
+    let base = '🚏';
+    let badge = '';
+    let family = 'otro';
+
+    if (tipoLower.includes('opi')) {
+        base = 'O';
+        family = 'opi';
+    } else if (tipoLower.includes('poste') || tipoLower.startsWith('pi') || tipoLower.startsWith('pa') || tipoLower.includes(' pi')) {
+        base = 'P';
+        family = 'poste';
+    } else if (tipoLower.includes('marquesina') || /^ma[-\s]?\d+/.test(tipoLower) || /ma[-\s]?\d+/i.test(rawTipoParada)) {
+        base = 'M';
+        family = 'marquesina';
+    } else if (tipoLower.includes('banco')) {
+        base = 'B';
+        family = 'banco';
+    }
+
+    if (family === 'poste') {
+        if (tipoLower === 'pa') badge = 'A';
+        else if (tipoLower === 'pi' || tipoLower.startsWith('pi') || tipoLower.includes(' pi')) badge = 'I';
+    }
+    if (family === 'marquesina') {
+        const matchMa = tipoLower.match(/ma[-\s]?(\d+)/);
+        if (matchMa) badge = matchMa[1];
+        if (tipoLower.includes('nuevo')) badge = badge ? `${badge}N` : 'N';
+    }
+    if (family === 'banco') {
+        const bancoRaw = ((mobiliario['Tipo Banco'] || mobiliario['Banco Madera'] || rawTipoParada) || '').toString().toLowerCase();
+        const matchListones = bancoRaw.match(/(\d+)\s*liston/);
+        if (matchListones) badge = matchListones[1];
+    }
+
+    return { base, badge, family, raw: rawTipoParada };
+}
+
+function getMobiliarioMarkerColor(mobiliario) {
+    if (esZonaCriticaMobiliario(mobiliario)) return '#ff4444';
+    if (mobiliario.tiene_incidencia) return '#ff8800';
+    return '#4488ff';
+}
+
+function buildMobiliarioUbicacionHtml(mobiliario, width, height) {
+    const lat = parseFloat(mobiliario.PuntoY).toFixed(6);
+    const lon = parseFloat(mobiliario.PuntoX).toFixed(6);
+    const num = mobiliario['Nº Emplazamiento'];
+    const desc = mobiliario.Descripción || mobiliario.Dirección || `${mobiliario.PuntoY},${mobiliario.PuntoX}`;
+    const mapsQuery = encodeURIComponent(`Parada Bus ${num} - ${desc} - Palma de Mallorca`);
+
+    return `
+        <div style="margin:10px 0;text-align:center;">
+            <h5 style="margin:5px 0;font-size:14px;">🌍 Ubicación</h5>
+            <div style="position:relative;width:${width}px;height:${height}px;border:1px solid #ccc;border-radius:5px;overflow:hidden;background:#f0f0f0;">
+                <img decoding="async"
+                    src="https://maps.googleapis.com/maps/api/streetview?size=${width}x${height}&location=${lat},${lon}&heading=0&pitch=0&fov=90&key=${GOOGLE_MAPS_API_KEY}"
+                    style="width:100%;height:100%;object-fit:cover;"
+                    onerror="this.style.display='none';this.nextElementSibling.style.display='block';"
+                    alt="Street View de la parada">
+                <div style="display:none;width:100%;height:100%;">
+                    <iframe width="100%" height="100%" frameborder="0" style="border:none;"
+                        src="https://www.google.com/maps/embed/v1/view?center=${lat},${lon}&zoom=18&maptype=satellite&key=${GOOGLE_MAPS_API_KEY}"
+                        allowfullscreen></iframe>
+                </div>
+                <div style="position:absolute;top:5px;left:5px;background:rgba(0,0,0,0.7);color:white;padding:6px;border-radius:3px;font-size:11px;max-width:150px;">
+                    <strong>🚌 ${num}</strong><br>
+                    <small>${mobiliario.Descripción || 'Parada'}</small>
+                </div>
+            </div>
+            <p style="font-size:11px;color:#666;margin-top:3px;">
+                <a href="https://www.google.com/maps/search/?api=1&query=${mapsQuery}" target="_blank" style="color:#007bff;text-decoration:none;">🔗 Google Maps</a>
+                <span style="margin:0 8px;">|</span>
+                <a href="https://www.google.com/maps/search/?api=1&query=${mapsQuery}&t=h" target="_blank" style="color:#ff6b35;text-decoration:none;">🚶 Street View</a>
+                <span style="margin:0 8px;">|</span>
+                <a href="https://www.openstreetmap.org/?mlat=${mobiliario.PuntoY}&mlon=${mobiliario.PuntoX}&zoom=18" target="_blank" style="color:#28a745;text-decoration:none;">🗺️ OpenStreetMap</a>
+            </p>
+        </div>`;
+}
+
+function buildMobiliarioCamposHtml(mobiliario) {
+    const tipoParada = mobiliario['Tipo Parada'] || 'N/A';
+    const tipoBanco = mobiliario['Tipo Banco'] || 'N/A';
+    const opiInstalado = (mobiliario['Opi Instalado'] === 1 || mobiliario['Opi Instalado'] === '1') ? 'Sí' : 'No';
+    const tip = mobiliario.SAE || 'No';
+    const direccion = mobiliario.Dirección || 'No disponible';
+
+    return `
+        <hr style="margin:8px 0;border-color:#ddd;">
+        <p><strong>Tipo de Parada:</strong> ${tipoParada}</p>
+        ${tipoBanco !== 'N/A' ? `<p><strong>Tipo de Banco:</strong> ${tipoBanco}</p>` : ''}
+        <p><strong>OPI Instalado:</strong> ${opiInstalado}</p>
+        <p><strong>TIP:</strong> ${tip}</p>
+        <p><strong>Dirección:</strong> ${direccion}</p>`;
+}
+
+function buildMobiliarioPopupSimple(mobiliario, distanciaKm) {
+    const distTxt = distanciaKm != null ? `<p><strong>Distancia:</strong> ${Number(distanciaKm).toFixed(2)} km</p>` : '';
+    return `
+        <div style="max-width:350px;padding:5px;">
+            <h4>🪑 ${mobiliario.Descripción || 'Sin descripción'}</h4>
+            <p><strong>Nº:</strong> ${mobiliario['Nº Emplazamiento']}</p>
+            <p><strong>Estado:</strong> ${getMobiliarioEstadoTexto(mobiliario)}</p>
+            <p><strong>Incidencias:</strong> ${mobiliario.total_incidencias || 0}</p>
+            ${distTxt}
+            ${buildMobiliarioCamposHtml(mobiliario)}
+            ${buildMobiliarioUbicacionHtml(mobiliario, 320, 150)}
+            <p style="text-align:center;margin-top:5px;font-size:12px;color:#666;">
+                <em>Haz clic para ver detalles completos</em>
+            </p>
+            ${getIncidenciasBotonesHtml(String(mobiliario['Nº Emplazamiento'] || ''), '')}
+        </div>`;
+}
+
+function buildMobiliarioIncidenciasHtml(data) {
+    const incidencias = data.incidencias || [];
+    if (incidencias.length > 0) {
+        let html = `<h5>🚨 Incidencias (${incidencias.length}):</h5><div style="max-height:200px;overflow-y:auto;">`;
+        incidencias.forEach((incidencia) => {
+            const fecha = incidencia.Fecha ? formatearFecha(incidencia.Fecha) : 'Sin fecha';
+            const motivo = incidencia.Motivo || 'Sin motivo';
+            const tipo = incidencia.Tipo || 'Sin tipo';
+            const numIncidencia = incidencia['Nº Incidencia'] || '';
+            const motivoCorto = motivo.length > 80 ? `${motivo.substring(0, 80)}...` : motivo;
+            html += `
+                <div style="margin-bottom:8px;padding:8px;background-color:#fff3cd;border-left:3px solid #ffc107;border-radius:4px;">
+                    <strong>#${numIncidencia}</strong> - ${tipo}<br>
+                    <small style="color:#666;">📅 ${fecha}</small><br>
+                    <small style="color:#333;">${motivoCorto}</small>
+                </div>`;
+        });
+        html += '</div>';
+        return html;
+    }
+    if (data.total_incidencias > 0) {
+        return `<p style="color:orange;"><em>⚠️ Hay ${data.total_incidencias} incidencia(s) pero no se pudieron cargar los detalles</em></p>`;
+    }
+    return '<p><em>No hay incidencias registradas</em></p>';
+}
+
+async function cargarMobiliarioPopupDetalle(marker, mobiliario) {
+    const loadingTooltip = `
+        <div style="max-width:300px;padding:10px;text-align:center;">
+            <h4>🪑 ${mobiliario.Descripción || 'Sin descripción'}</h4>
+            <p>Cargando incidencias...</p>
+            <div style="border:2px solid #f3f3f3;border-top:2px solid #3498db;border-radius:50%;width:20px;height:20px;animation:spin 1s linear infinite;margin:10px auto;"></div>
+        </div>`;
+    marker.setPopupContent(loadingTooltip);
+
+    try {
+        const response = await fetch(`/api/mobiliario/${mobiliario['Nº Emplazamiento']}/incidencias`);
+        if (!response.ok) {
+            throw new Error(`Error al obtener incidencias: ${response.status}`);
+        }
+        const data = await response.json();
+        if (!data.success) {
+            throw new Error(data.error || 'Error al obtener incidencias');
+        }
+
+        let tooltipContent = `
+            <div style="max-width:460px;max-height:520px;overflow-y:auto;overflow-x:hidden;padding:5px;">
+                <h4>🪑 Mobiliario: ${mobiliario.Descripción || 'Sin descripción'}</h4>
+                <p><strong>Nº Emplazamiento:</strong> ${mobiliario['Nº Emplazamiento']}</p>
+                <p><strong>Tipo:</strong> ${mobiliario.Tipo || 'N/A'}</p>
+                ${buildMobiliarioCamposHtml(mobiliario)}
+                ${mobiliario.geocodificado ? '<p><strong>📍 Ubicación:</strong> <em>Geocodificada desde dirección de Mallorca</em></p>' : ''}
+                <hr style="margin:8px 0;border-color:#ddd;">
+                <p><strong>Estado:</strong> ${getMobiliarioEstadoTexto(mobiliario)}</p>
+                <p><strong>Total incidencias:</strong> ${data.total_incidencias || 0}</p>
+                ${buildMobiliarioUbicacionHtml(mobiliario, 350, 200)}`;
+
+        if (mobiliario.Operario) {
+            tooltipContent += `<p><strong>Operario:</strong> ${mobiliario.Operario}</p>`;
+        }
+        if (mobiliario['Zona Limpieza']) {
+            tooltipContent += `<p><strong>Zona Limpieza:</strong> ${mobiliario['Zona Limpieza']}</p>`;
+        }
+
+        tooltipContent += buildMobiliarioIncidenciasHtml(data);
+        tooltipContent += getIncidenciasBotonesHtml(String(mobiliario['Nº Emplazamiento'] || ''), '');
+        tooltipContent += '</div>';
+
+        marker.setPopupContent(tooltipContent);
+        setupPopupIncidenciaButtons(marker);
+        return true;
+    } catch (error) {
+        console.error('Error cargando incidencias de mobiliario:', error);
+        marker.setPopupContent(`
+            <div style="max-width:300px;padding:10px;">
+                <h4>🪑 ${mobiliario.Descripción || 'Sin descripción'}</h4>
+                <p><strong>Nº Emplazamiento:</strong> ${mobiliario['Nº Emplazamiento']}</p>
+                <p><strong>Estado:</strong> ${getMobiliarioEstadoTexto(mobiliario)}</p>
+                <p><strong>Total incidencias:</strong> ${mobiliario.total_incidencias || 0}</p>
+                <p style="color:red;"><em>Error cargando detalles de incidencias</em></p>
+                ${getIncidenciasBotonesHtml(String(mobiliario['Nº Emplazamiento'] || ''), '')}
+            </div>`);
+        setupPopupIncidenciaButtons(marker);
+        return false;
+    }
+}
+
 function crearMarcadorMobiliario(mobiliario, distanciaKm) {
     if (!mobiliario.PuntoX || !mobiliario.PuntoY) return null;
 
-    const color = mobiliario.tiene_incidencia ? '#ff8800' : '#4488ff';
+    const tipoInfo = getTipoParadaInfo(mobiliario);
+    const color = getMobiliarioMarkerColor(mobiliario);
     const busIcon = L.divIcon({
         className: 'custom-bus-icon',
-        html: `<div style="background-color:${color};color:white;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:bold;border:2px solid white;box-shadow:0 2px 4px rgba(0,0,0,0.3);">🚌</div>`,
+        html: `<div style="background-color:${color};color:white;width:24px;height:24px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:bold;border:2px solid white;box-shadow:0 2px 4px rgba(0,0,0,0.3);position:relative;">
+            <span>${tipoInfo.base}</span>
+            ${tipoInfo.badge ? `<span style="position:absolute;bottom:-3px;right:-2px;font-size:9px;font-weight:800;color:#fff;text-shadow:0 0 2px rgba(0,0,0,0.9);">${tipoInfo.badge}</span>` : ''}
+        </div>`,
         iconSize: [24, 24],
         iconAnchor: [12, 12]
     });
+
     const marker = L.marker([mobiliario.PuntoY, mobiliario.PuntoX], { icon: busIcon });
-    const distTxt = distanciaKm != null ? `<p><strong>Distancia:</strong> ${Number(distanciaKm).toFixed(2)} km</p>` : '';
-    const simpleTooltip = `
-        <div style="max-width:350px;padding:5px;">
-            <h4>🚌 ${mobiliario.Descripción || 'Parada'}</h4>
-            <p><strong>Nº Emplazamiento:</strong> ${mobiliario['Nº Emplazamiento']}</p>
-            ${mobiliario.Dirección ? `<p><strong>Dirección:</strong> ${mobiliario.Dirección}</p>` : ''}
-            <p><strong>Estado:</strong> ${mobiliario.tiene_incidencia ? '⚠️ Con incidencias' : '✅ Sin incidencias'}</p>
-            ${distTxt}
-            ${getIncidenciasBotonesHtml(String(mobiliario['Nº Emplazamiento'] || ''), '')}
-            <p style="font-size:12px;color:#666;margin-top:8px;"><em>Carga mobiliario completo para ver incidencias detalladas</em></p>
-        </div>`;
-    marker.bindPopup(simpleTooltip, { maxWidth: 420 });
+    marker.mobiliarioData = mobiliario;
+    marker.bindPopup(buildMobiliarioPopupSimple(mobiliario, distanciaKm), { maxWidth: 420 });
     setupPopupIncidenciaButtons(marker);
+
+    let detallesCargados = false;
+    marker.on('click', async function() {
+        if (detallesCargados) return;
+        const ok = await cargarMobiliarioPopupDetalle(marker, mobiliario);
+        if (ok) detallesCargados = true;
+    });
+
     return marker;
 }
 
