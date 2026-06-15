@@ -538,6 +538,17 @@ function crearPopupRecurso(marker, recurso) {
                 }
             }
 
+            const ubicacionHtml = await buildUbicacionStreetViewHtmlAsync({
+                lat: recurso.PuntoY,
+                lon: recurso.PuntoX,
+                direccionConocida: '',
+                titulo: '🌍 Ubicación',
+                etiquetaOverlay: `🔧 ${recurso.No_}`,
+                subtituloOverlay: recurso.Name || recurso['Tipo Recurso'] || 'Recurso',
+                width: 320,
+                height: 150,
+            });
+
             let tooltipContent = `
                 <div style="max-width: 400px; max-height: 500px; overflow-y: auto; padding: 5px;">
                     <h4>🔧 Recurso: ${recurso.Name || 'Sin nombre'}</h4>
@@ -557,6 +568,7 @@ function crearPopupRecurso(marker, recurso) {
                              onerror="this.style.display='none';">
                     </div>
                     ` : ''}
+                    ${ubicacionHtml}
                     <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #ddd;">
                         <label style="display: flex; align-items: center; cursor: pointer;">
                             <input type="checkbox" id="select-detail-${recurso.No_}" 
@@ -1457,6 +1469,127 @@ async function loadRecursosData(data) {
 
 // Función auxiliar para cargar datos de mobiliario
 const GOOGLE_MAPS_API_KEY = 'AIzaSyDw_VuMVhBi6Yj0fWVZTpf32DxjpnjbCno';
+const direccionUbicacionCache = new Map();
+
+function normalizarDireccionConocida(direccion) {
+    const d = (direccion || '').toString().trim();
+    if (!d || d === 'No disponible' || d === 'N/A') return null;
+    return d;
+}
+
+async function resolverDireccionUbicacion(lat, lon, direccionConocida) {
+    const conocida = normalizarDireccionConocida(direccionConocida);
+    if (conocida) return conocida;
+
+    const la = parseFloat(lat);
+    const lo = parseFloat(lon);
+    if (isNaN(la) || isNaN(lo)) return null;
+
+    const cacheKey = `${la.toFixed(5)},${lo.toFixed(5)}`;
+    if (direccionUbicacionCache.has(cacheKey)) {
+        return direccionUbicacionCache.get(cacheKey);
+    }
+
+    try {
+        const response = await fetch(`/api/geocodificar-coordenadas?lat=${la}&lon=${lo}`);
+        if (!response.ok) {
+            direccionUbicacionCache.set(cacheKey, null);
+            return null;
+        }
+        const data = await response.json();
+        const direccion = normalizarDireccionConocida(data.direccion);
+        direccionUbicacionCache.set(cacheKey, direccion);
+        return direccion;
+    } catch (error) {
+        console.warn('No se pudo resolver dirección por coordenadas:', error);
+        direccionUbicacionCache.set(cacheKey, null);
+        return null;
+    }
+}
+
+function buildEnlacesMapaHtml(lat, lon, direccion) {
+    const latStr = Number(lat).toFixed(6);
+    const lonStr = Number(lon).toFixed(6);
+    const query = direccion ? encodeURIComponent(direccion) : `${latStr},${lonStr}`;
+    const googleMapsUrl = `https://www.google.com/maps/search/?api=1&query=${query}`;
+    const streetViewUrl = `https://www.google.com/maps/search/?api=1&query=${query}&t=h`;
+    const osmUrl = `https://www.openstreetmap.org/?mlat=${latStr}&mlon=${lonStr}&zoom=18`;
+
+    const dirTxt = direccion
+        ? `<br><small style="color:#666;">${direccion}</small>`
+        : `<br><small style="color:#999;">${latStr}, ${lonStr}</small>`;
+
+    return `
+            <p style="font-size:11px;color:#666;margin-top:3px;">
+                <a href="${googleMapsUrl}" target="_blank" style="color:#007bff;text-decoration:none;">🔗 Google Maps</a>
+                <span style="margin:0 8px;">|</span>
+                <a href="${streetViewUrl}" target="_blank" style="color:#ff6b35;text-decoration:none;">🚶 Street View</a>
+                <span style="margin:0 8px;">|</span>
+                <a href="${osmUrl}" target="_blank" style="color:#28a745;text-decoration:none;">🗺️ OpenStreetMap</a>
+                ${dirTxt}
+            </p>`;
+}
+
+function buildUbicacionStreetViewHtml(options) {
+    const {
+        lat, lon, direccion, titulo, etiquetaOverlay, subtituloOverlay, width, height,
+    } = options;
+
+    const la = parseFloat(lat);
+    const lo = parseFloat(lon);
+    if (isNaN(la) || isNaN(lo) || (la === 0 && lo === 0)) return '';
+
+    const latStr = la.toFixed(6);
+    const lonStr = lo.toFixed(6);
+    const svLocation = direccion ? encodeURIComponent(direccion) : `${latStr},${lonStr}`;
+
+    return `
+        <div style="margin:10px 0;text-align:center;border-top:1px solid #eee;padding-top:10px;">
+            <h5 style="margin:5px 0;font-size:14px;">${titulo || '🌍 Ubicación'}</h5>
+            <div style="position:relative;width:${width}px;height:${height}px;border:1px solid #ccc;border-radius:5px;overflow:hidden;background:#f0f0f0;margin:0 auto;">
+                <img decoding="async"
+                    src="https://maps.googleapis.com/maps/api/streetview?size=${width}x${height}&location=${svLocation}&heading=0&pitch=0&fov=90&key=${GOOGLE_MAPS_API_KEY}"
+                    style="width:100%;height:100%;object-fit:cover;"
+                    onerror="this.style.display='none';this.nextElementSibling.style.display='block';"
+                    alt="Street View">
+                <div style="display:none;width:100%;height:100%;">
+                    <iframe width="100%" height="100%" frameborder="0" style="border:none;"
+                        src="https://www.google.com/maps/embed/v1/view?center=${latStr},${lonStr}&zoom=18&maptype=satellite&key=${GOOGLE_MAPS_API_KEY}"
+                        allowfullscreen></iframe>
+                </div>
+                ${etiquetaOverlay ? `
+                <div style="position:absolute;top:5px;left:5px;background:rgba(0,0,0,0.7);color:white;padding:6px;border-radius:3px;font-size:11px;max-width:150px;text-align:left;">
+                    <strong>${etiquetaOverlay}</strong>
+                    ${subtituloOverlay ? `<br><small>${subtituloOverlay}</small>` : ''}
+                </div>` : ''}
+            </div>
+            ${buildEnlacesMapaHtml(la, lo, direccion)}
+        </div>`;
+}
+
+async function buildUbicacionStreetViewHtmlAsync(options) {
+    const la = parseFloat(options.lat);
+    const lo = parseFloat(options.lon);
+    if (isNaN(la) || isNaN(lo) || (la === 0 && lo === 0)) return '';
+
+    const direccion = await resolverDireccionUbicacion(la, lo, options.direccionConocida);
+    return buildUbicacionStreetViewHtml({ ...options, lat: la, lon: lo, direccion });
+}
+
+function buildMobiliarioUbicacionHtml(mobiliario, width, height) {
+    const num = mobiliario['Nº Emplazamiento'];
+    const direccion = normalizarDireccionConocida(mobiliario.Dirección);
+    return buildUbicacionStreetViewHtml({
+        lat: mobiliario.PuntoY,
+        lon: mobiliario.PuntoX,
+        direccion,
+        titulo: '🌍 Ubicación',
+        etiquetaOverlay: `🚌 ${num}`,
+        subtituloOverlay: mobiliario.Descripción || 'Parada',
+        width,
+        height,
+    });
+}
 
 function esZonaCriticaMobiliario(mobiliario) {
     const v = mobiliario['Zona Crítica'];
@@ -1522,42 +1655,6 @@ function getMobiliarioMarkerColor(mobiliario) {
     if (esZonaCriticaMobiliario(mobiliario)) return '#ff4444';
     if (mobiliario.tiene_incidencia) return '#ff8800';
     return '#4488ff';
-}
-
-function buildMobiliarioUbicacionHtml(mobiliario, width, height) {
-    const lat = parseFloat(mobiliario.PuntoY).toFixed(6);
-    const lon = parseFloat(mobiliario.PuntoX).toFixed(6);
-    const num = mobiliario['Nº Emplazamiento'];
-    const desc = mobiliario.Descripción || mobiliario.Dirección || `${mobiliario.PuntoY},${mobiliario.PuntoX}`;
-    const mapsQuery = encodeURIComponent(`Parada Bus ${num} - ${desc} - Palma de Mallorca`);
-
-    return `
-        <div style="margin:10px 0;text-align:center;">
-            <h5 style="margin:5px 0;font-size:14px;">🌍 Ubicación</h5>
-            <div style="position:relative;width:${width}px;height:${height}px;border:1px solid #ccc;border-radius:5px;overflow:hidden;background:#f0f0f0;">
-                <img decoding="async"
-                    src="https://maps.googleapis.com/maps/api/streetview?size=${width}x${height}&location=${lat},${lon}&heading=0&pitch=0&fov=90&key=${GOOGLE_MAPS_API_KEY}"
-                    style="width:100%;height:100%;object-fit:cover;"
-                    onerror="this.style.display='none';this.nextElementSibling.style.display='block';"
-                    alt="Street View de la parada">
-                <div style="display:none;width:100%;height:100%;">
-                    <iframe width="100%" height="100%" frameborder="0" style="border:none;"
-                        src="https://www.google.com/maps/embed/v1/view?center=${lat},${lon}&zoom=18&maptype=satellite&key=${GOOGLE_MAPS_API_KEY}"
-                        allowfullscreen></iframe>
-                </div>
-                <div style="position:absolute;top:5px;left:5px;background:rgba(0,0,0,0.7);color:white;padding:6px;border-radius:3px;font-size:11px;max-width:150px;">
-                    <strong>🚌 ${num}</strong><br>
-                    <small>${mobiliario.Descripción || 'Parada'}</small>
-                </div>
-            </div>
-            <p style="font-size:11px;color:#666;margin-top:3px;">
-                <a href="https://www.google.com/maps/search/?api=1&query=${mapsQuery}" target="_blank" style="color:#007bff;text-decoration:none;">🔗 Google Maps</a>
-                <span style="margin:0 8px;">|</span>
-                <a href="https://www.google.com/maps/search/?api=1&query=${mapsQuery}&t=h" target="_blank" style="color:#ff6b35;text-decoration:none;">🚶 Street View</a>
-                <span style="margin:0 8px;">|</span>
-                <a href="https://www.openstreetmap.org/?mlat=${mobiliario.PuntoY}&mlon=${mobiliario.PuntoX}&zoom=18" target="_blank" style="color:#28a745;text-decoration:none;">🗺️ OpenStreetMap</a>
-            </p>
-        </div>`;
 }
 
 function buildMobiliarioCamposHtml(mobiliario) {
@@ -1639,6 +1736,17 @@ async function cargarMobiliarioPopupDetalle(marker, mobiliario) {
             throw new Error(data.error || 'Error al obtener incidencias');
         }
 
+        const ubicacionHtml = await buildUbicacionStreetViewHtmlAsync({
+            lat: mobiliario.PuntoY,
+            lon: mobiliario.PuntoX,
+            direccionConocida: mobiliario.Dirección,
+            titulo: '🌍 Ubicación',
+            etiquetaOverlay: `🚌 ${mobiliario['Nº Emplazamiento']}`,
+            subtituloOverlay: mobiliario.Descripción || 'Parada',
+            width: 350,
+            height: 200,
+        });
+
         let tooltipContent = `
             <div style="max-width:460px;max-height:520px;overflow-y:auto;overflow-x:hidden;padding:5px;">
                 <h4>🪑 Mobiliario: ${mobiliario.Descripción || 'Sin descripción'}</h4>
@@ -1649,7 +1757,7 @@ async function cargarMobiliarioPopupDetalle(marker, mobiliario) {
                 <hr style="margin:8px 0;border-color:#ddd;">
                 <p><strong>Estado:</strong> ${getMobiliarioEstadoTexto(mobiliario)}</p>
                 <p><strong>Total incidencias:</strong> ${data.total_incidencias || 0}</p>
-                ${buildMobiliarioUbicacionHtml(mobiliario, 350, 200)}`;
+                ${ubicacionHtml}`;
 
         if (mobiliario.Operario) {
             tooltipContent += `<p><strong>Operario:</strong> ${mobiliario.Operario}</p>`;

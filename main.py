@@ -440,6 +440,49 @@ def geocodificar_direccion(direccion):
         return opciones[0]['lat'], opciones[0]['lon']
     return None, None
 
+
+def geocodificar_coordenadas(lat, lon):
+    """
+    Geocodificación inversa (coordenadas → dirección) dentro de Baleares.
+    """
+    try:
+        if lat is None or lon is None:
+            return None
+        if not _coordenada_en_baleares(lat, lon):
+            return None
+        if not GEOCODING_SERVICES['google_maps']['api_key']:
+            return None
+
+        url = 'https://maps.googleapis.com/maps/api/geocode/json'
+        params = {
+            'latlng': f'{lat},{lon}',
+            'key': GEOCODING_SERVICES['google_maps']['api_key'],
+            'region': 'es',
+            'language': 'es',
+        }
+        response = requests.get(url, params=params, timeout=SEARCH_CONFIG.get('timeout', 10))
+        if response.status_code != 200:
+            return None
+
+        data = response.json()
+        if data.get('status') != 'OK' or not data.get('results'):
+            return None
+
+        for result in data['results']:
+            if not _resultado_google_en_baleares(result):
+                continue
+            location = result['geometry']['location']
+            return {
+                'direccion': result.get('formatted_address', ''),
+                'lat': location.get('lat', lat),
+                'lon': location.get('lng', lon),
+            }
+        return None
+    except Exception as e:
+        print(f'Error en geocodificación inversa: {e}')
+        return None
+
+
 def geocode_with_google_maps(parada, description, address):
     """
     Geocodifica usando Google Maps API (más preciso para paradas de autobús)
@@ -1623,6 +1666,35 @@ def api_geocodificar_direccion():
         })
     except Exception as e:
         print(f"Error en endpoint /api/geocodificar-direccion: {e}")
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/geocodificar-coordenadas')
+def api_geocodificar_coordenadas():
+    """Geocodificación inversa: obtiene dirección a partir de lat/lon."""
+    try:
+        lat = request.args.get('lat', type=float)
+        lon = request.args.get('lon', type=float)
+        if lat is None or lon is None:
+            return jsonify({'error': 'Se requieren lat y lon'}), 400
+        if not _coordenada_en_baleares(lat, lon):
+            return jsonify({'error': 'Las coordenadas deben estar dentro de las Islas Baleares'}), 400
+
+        resultado = geocodificar_coordenadas(lat, lon)
+        if not resultado or not resultado.get('direccion'):
+            return jsonify({
+                'error': 'No se pudo obtener la dirección para esas coordenadas',
+                'lat': lat,
+                'lon': lon,
+            }), 404
+
+        return jsonify({
+            'lat': resultado['lat'],
+            'lon': resultado['lon'],
+            'direccion': resultado['direccion'],
+        })
+    except Exception as e:
+        print(f'Error en /api/geocodificar-coordenadas: {e}')
         return jsonify({'error': str(e)}), 500
 
 
