@@ -385,15 +385,65 @@ function getRecursoMarkerColor(recurso) {
     return '#44ff44';
 }
 
-function crearMarcadorRecurso(recurso) {
+/** Separa marcadores con la misma coordenada en un anillo (~15 m). */
+function calcularPosicionesMarcadoresSeparados(items) {
+    const precision = 5;
+    const groups = new Map();
+
+    items.forEach((item) => {
+        const lat = parseFloat(item.PuntoY);
+        const lng = parseFloat(item.PuntoX);
+        if (isNaN(lat) || isNaN(lng) || (lat === 0 && lng === 0)) return;
+        const key = `${lat.toFixed(precision)},${lng.toFixed(precision)}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push({ item, lat, lng });
+    });
+
+    const posiciones = new Map();
+
+    groups.forEach((members) => {
+        const idDe = (item) => String(item.No_ ?? item['No_'] ?? '');
+
+        if (members.length === 1) {
+            const m = members[0];
+            posiciones.set(idDe(m.item), { lat: m.lat, lng: m.lng });
+            return;
+        }
+
+        const baseLat = members[0].lat;
+        const baseLng = members[0].lng;
+        const n = members.length;
+        const rings = Math.max(1, Math.ceil(n / 6));
+        // ~1 m de radio: iconos casi solapados pero aún clicables por separado
+        const radiusLat = 0.00005 * rings;
+        const cosLat = Math.cos((baseLat * Math.PI) / 180) || 1;
+        const radiusLng = radiusLat / cosLat;
+
+        members.forEach((m, i) => {
+            const angle = (2 * Math.PI * i) / n - Math.PI / 2;
+            posiciones.set(idDe(m.item), {
+                lat: baseLat + radiusLat * Math.cos(angle),
+                lng: baseLng + radiusLng * Math.sin(angle),
+            });
+        });
+    });
+
+    return posiciones;
+}
+
+function crearMarcadorRecurso(recurso, posicionMapa) {
     if (recurso.PuntoX == null || recurso.PuntoY == null ||
         isNaN(recurso.PuntoX) || isNaN(recurso.PuntoY) ||
         recurso.PuntoX === 0 || recurso.PuntoY === 0) {
         return null;
     }
 
-    const lat = parseFloat(recurso.PuntoY);
-    const lng = parseFloat(recurso.PuntoX);
+    let lat = parseFloat(recurso.PuntoY);
+    let lng = parseFloat(recurso.PuntoX);
+    if (posicionMapa) {
+        lat = posicionMapa.lat;
+        lng = posicionMapa.lng;
+    }
     if (isNaN(lat) || isNaN(lng) || lat < -90 || lat > 90 || lng < -180 || lng > 180) {
         return null;
     }
@@ -543,10 +593,7 @@ function crearPopupRecurso(marker, recurso) {
                 lon: recurso.PuntoX,
                 direccionConocida: '',
                 titulo: '🌍 Ubicación',
-                etiquetaOverlay: `🔧 ${recurso.No_}`,
-                subtituloOverlay: recurso.Name || recurso['Tipo Recurso'] || 'Recurso',
-                width: 320,
-                height: 150,
+                mostrarMiniatura: false,
             });
 
             let tooltipContent = `
@@ -1141,13 +1188,16 @@ async function loadRecursosData(data) {
     let recursosSinCoordenadas = 0;
     
     console.log(`Procesando ${totalItems} recursos en lotes de ${batchSize}...`);
+
+    const posicionesMap = calcularPosicionesMarcadoresSeparados(data.datos);
     
     for (let i = 0; i < totalItems; i += batchSize) {
         const batch = data.datos.slice(i, i + batchSize);
         
         batch.forEach(recurso => {
             try {
-                const marker = crearMarcadorRecurso(recurso);
+                const pos = posicionesMap.get(String(recurso.No_ ?? recurso['No_'] ?? ''));
+                const marker = crearMarcadorRecurso(recurso, pos);
                 if (marker) {
                     recursosLayer.addLayer(marker);
                     marcadoresCreados++;
@@ -1533,6 +1583,7 @@ function buildEnlacesMapaHtml(lat, lon, direccion) {
 function buildUbicacionStreetViewHtml(options) {
     const {
         lat, lon, direccion, titulo, etiquetaOverlay, subtituloOverlay, width, height,
+        mostrarMiniatura = true,
     } = options;
 
     const la = parseFloat(lat);
@@ -1542,13 +1593,13 @@ function buildUbicacionStreetViewHtml(options) {
     const latStr = la.toFixed(6);
     const lonStr = lo.toFixed(6);
     const svLocation = direccion ? encodeURIComponent(direccion) : `${latStr},${lonStr}`;
+    const w = width || 320;
+    const h = height || 150;
 
-    return `
-        <div style="margin:10px 0;text-align:center;border-top:1px solid #eee;padding-top:10px;">
-            <h5 style="margin:5px 0;font-size:14px;">${titulo || '🌍 Ubicación'}</h5>
-            <div style="position:relative;width:${width}px;height:${height}px;border:1px solid #ccc;border-radius:5px;overflow:hidden;background:#f0f0f0;margin:0 auto;">
+    const miniaturaHtml = mostrarMiniatura ? `
+            <div style="position:relative;width:${w}px;height:${h}px;border:1px solid #ccc;border-radius:5px;overflow:hidden;background:#f0f0f0;margin:0 auto;">
                 <img decoding="async"
-                    src="https://maps.googleapis.com/maps/api/streetview?size=${width}x${height}&location=${svLocation}&heading=0&pitch=0&fov=90&key=${GOOGLE_MAPS_API_KEY}"
+                    src="https://maps.googleapis.com/maps/api/streetview?size=${w}x${h}&location=${svLocation}&heading=0&pitch=0&fov=90&key=${GOOGLE_MAPS_API_KEY}"
                     style="width:100%;height:100%;object-fit:cover;"
                     onerror="this.style.display='none';this.nextElementSibling.style.display='block';"
                     alt="Street View">
@@ -1562,7 +1613,12 @@ function buildUbicacionStreetViewHtml(options) {
                     <strong>${etiquetaOverlay}</strong>
                     ${subtituloOverlay ? `<br><small>${subtituloOverlay}</small>` : ''}
                 </div>` : ''}
-            </div>
+            </div>` : '';
+
+    return `
+        <div style="margin:10px 0;text-align:center;border-top:1px solid #eee;padding-top:10px;">
+            <h5 style="margin:5px 0;font-size:14px;">${titulo || '🌍 Ubicación'}</h5>
+            ${miniaturaHtml}
             ${buildEnlacesMapaHtml(la, lo, direccion)}
         </div>`;
 }
@@ -3357,8 +3413,10 @@ function displaySearchResults(data, searchType, searchParams) {
     
     // Mostrar recursos encontrados
     if (data.recursos && data.recursos.length > 0) {
+        const posicionesMap = calcularPosicionesMarcadoresSeparados(data.recursos);
         data.recursos.forEach(recurso => {
-            const marker = crearMarcadorRecurso(recurso);
+            const pos = posicionesMap.get(String(recurso.No_ ?? recurso['No_'] ?? ''));
+            const marker = crearMarcadorRecurso(recurso, pos);
             if (marker) searchLayer.addLayer(marker);
         });
     }
@@ -4681,8 +4739,10 @@ function displayZoneSearchResults(recursos, zone, radius) {
     // Mostrar recursos encontrados
     if (recursos.length > 0) {
         console.log('✅ Mostrando recursos encontrados...');
+        const posicionesMap = calcularPosicionesMarcadoresSeparados(recursos);
         recursos.forEach(recurso => {
-            const marker = crearMarcadorRecurso(recurso);
+            const pos = posicionesMap.get(String(recurso.No_ ?? recurso['No_'] ?? ''));
+            const marker = crearMarcadorRecurso(recurso, pos);
             if (marker) searchLayer.addLayer(marker);
         });
     }
