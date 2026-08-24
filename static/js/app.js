@@ -124,11 +124,13 @@ async function procesarSsoTokenDesdeUrl() {
         const data = await response.json();
         if (!data.success) {
             const errorDiv = document.getElementById('loginError');
+            const msg = data.error || 'No se pudo completar el acceso Malla';
             if (errorDiv) {
-                errorDiv.textContent = data.error || 'No se pudo completar el acceso Malla';
+                errorDiv.textContent = msg;
                 errorDiv.style.display = 'block';
             }
             mostrarModalLogin();
+            showNotification(msg, 'warning');
             return true;
         }
         return await manejarRespuestaAutenticacion(data, { fromSso: true });

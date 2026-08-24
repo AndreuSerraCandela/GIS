@@ -948,6 +948,7 @@ PUBLIC_ROUTES = {
     '/api/auth/2fa/estado',
     '/api/auth/2fa/reenviar',
     '/api/auth/sso/exchange',
+    '/api/auth/sso/status',
 }
 
 PUBLIC_ROUTE_PREFIXES = (
@@ -1155,13 +1156,29 @@ def login():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
+@app.route('/api/auth/sso/status', methods=['GET'])
+def auth_sso_status():
+    """Diagnóstico SSO (sin secretos)."""
+    return jsonify({'success': True, **sso_auth.sso_status_payload()})
+
+
 @app.route('/api/auth/sso/exchange', methods=['POST'])
 def auth_sso_exchange():
     """Intercambia token SSO de appdesktop por flujo 2FA/sesión GIS."""
     if not sso_auth.is_sso_enabled():
+        status = sso_auth.sso_status_payload()
+        hint = (
+            'Configure MALLA_SSO_SECRET en C:\\inetpub\\wwwroot\\Gis\\.env '
+            '(mismo valor que appdesktop) y reinicie GIS.'
+        )
+        if not status.get('secret_configured'):
+            error = f'Login SSO no habilitado: falta MALLA_SSO_SECRET. {hint}'
+        else:
+            error = 'Login SSO no habilitado (SSO_LOGIN_ENABLED=false).'
         return jsonify({
             'success': False,
-            'error': 'Login SSO no habilitado',
+            'error': error,
+            'sso_status': status,
         }), 403
     data = request.get_json(silent=True) or {}
     token = (data.get('token') or '').strip()

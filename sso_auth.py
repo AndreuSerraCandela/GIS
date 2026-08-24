@@ -28,19 +28,41 @@ def sso_launch_url() -> str:
     return f"{APPDESKTOP_URL}/api/auth/sso/launch?app=gis"
 
 
+def sso_status_payload() -> dict[str, Any]:
+    return {
+        "enabled": is_sso_enabled(),
+        "sso_login_enabled": SSO_LOGIN_ENABLED,
+        "secret_configured": bool(MALLA_SSO_SECRET),
+        "appdesktop_url": APPDESKTOP_URL,
+    }
+
+
 def verify_exchange_token(token: str) -> dict[str, Any]:
     if not MALLA_SSO_SECRET:
-        raise ValueError("SSO no configurado en GIS (MALLA_SSO_SECRET)")
+        raise ValueError(
+            "SSO no configurado en GIS. Añade MALLA_SSO_SECRET al .env del servidor "
+            "(mismo valor que en apps.malla.es) y reinicia GIS."
+        )
     raw = (token or "").strip()
     if not raw:
         raise ValueError("Token SSO requerido")
-    payload = jwt.decode(
-        raw,
-        MALLA_SSO_SECRET,
-        algorithms=["HS256"],
-        audience=SSO_AUDIENCE,
-        issuer=SSO_ISSUER,
-    )
+    try:
+        payload = jwt.decode(
+            raw,
+            MALLA_SSO_SECRET,
+            algorithms=["HS256"],
+            audience=SSO_AUDIENCE,
+            issuer=SSO_ISSUER,
+        )
+    except jwt.InvalidSignatureError as exc:
+        raise ValueError(
+            "Token SSO rechazado: MALLA_SSO_SECRET de GIS no coincide con el del portal. "
+            "Debe ser el mismo valor en ambos .env."
+        ) from exc
+    except jwt.ExpiredSignatureError as exc:
+        raise ValueError("Token SSO caducado. Vuelve a abrir GIS desde el portal.") from exc
+    except jwt.InvalidTokenError as exc:
+        raise ValueError(f"Token SSO invalido: {exc}") from exc
     username = (payload.get("gtask_username") or "").strip()
     access_token = (payload.get("access_token") or "").strip()
     if not username or not access_token:
