@@ -363,6 +363,12 @@
             </div>
             <div class="modal-body">
                 <div id="loginError" style="display: none; color: red; margin-bottom: 1rem; padding: 0.5rem; background-color: #ffe6e6; border-radius: 4px;"></div>
+                {% if sso_enabled %}
+                <button id="btnSsoMalla" type="button" class="btn btn-secondary" style="width: 100%; margin-bottom: 1rem;">
+                    Entrar con cuenta Malla
+                </button>
+                <p style="text-align: center; color: #777; font-size: 0.85rem; margin: 0 0 1rem;">— o con usuario GTask —</p>
+                {% endif %}
                 <div class="form-group">
                     <label for="loginUsername">Usuario GTask:</label>
                     <input type="text" id="loginUsername" class="form-control" placeholder="Ingresa tu usuario" autocomplete="username">
@@ -410,8 +416,27 @@
             </div>
         </div>
     </div>
+
+    <!-- Modal dispositivo de confianza (solo móvil, tras primer 2FA) -->
+    <div id="trustedDeviceModal" class="modal" style="display: none; z-index: 10003;">
+        <div class="modal-content" style="max-width: 400px;">
+            <div class="modal-header">
+                <h3 style="margin: 0;">🔒 ¿Confiar en este dispositivo?</h3>
+            </div>
+            <div class="modal-body">
+                <p id="trustedDeviceMessage" style="margin-top: 0;">
+                    En este móvil no volveremos a pedirte verificación WhatsApp durante 90 días.
+                </p>
+            </div>
+            <div class="modal-footer" style="display: flex; flex-direction: column; gap: 0.5rem;">
+                <button id="btnTrustDeviceYes" class="btn btn-primary" style="width: 100%;">Sí, confiar</button>
+                <button id="btnTrustDeviceNo" class="btn btn-link" style="width: 100%;">No, pedir WhatsApp cada vez</button>
+            </div>
+        </div>
+    </div>
     
     <script id="incidencias-url-json" type="application/json">{{ (incidencias_url or '') | tojson }}</script>
+    <script id="sso-config-json" type="application/json">{{ {'enabled': sso_enabled, 'launch_url': sso_launch_url} | tojson }}</script>
     <script>
         window.INCIDENCIAS_URL = JSON.parse(document.getElementById("incidencias-url-json").textContent);
     </script>

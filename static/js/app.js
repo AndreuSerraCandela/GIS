@@ -7,6 +7,15 @@ let pending2fa = false;
 let twoFactorPollTimer = null;
 let twoFactorChallengeId = null;
 
+const SSO_CONFIG = (() => {
+    try {
+        const el = document.getElementById('sso-config-json');
+        return el ? JSON.parse(el.textContent || '{}') : {};
+    } catch (e) {
+        return {};
+    }
+})();
+
 function isMobileClient() {
     if (typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 768px)').matches) {
         return true;
@@ -68,6 +77,8 @@ const PUBLIC_API_FRAGMENTS = [
     '/api/logout',
     '/api/auth-status',
     '/api/auth/2fa/',
+    '/api/auth/sso/',
+    '/api/auth/trusted-device',
     '/api/gtask/login',
     '/api/gtask/status',
     '/api/gtask/logout',
@@ -95,6 +106,168 @@ window.fetch = async function(...args) {
     return response;
 };
 
+async function procesarSsoTokenDesdeUrl() {
+    const params = new URLSearchParams(window.location.search);
+    const token = params.get('sso_token');
+    if (!token) return false;
+    params.delete('sso_token');
+    const qs = params.toString();
+    const cleanUrl = window.location.pathname + (qs ? `?${qs}` : '');
+    window.history.replaceState({}, '', cleanUrl);
+    try {
+        const response = await fetch('/api/auth/sso/exchange', {
+            method: 'POST',
+            headers: getAuthRequestHeaders(),
+            credentials: 'same-origin',
+            body: JSON.stringify({ token }),
+        });
+        const data = await response.json();
+        if (!data.success) {
+            const errorDiv = document.getElementById('loginError');
+            if (errorDiv) {
+                errorDiv.textContent = data.error || 'No se pudo completar el acceso Malla';
+                errorDiv.style.display = 'block';
+            }
+            mostrarModalLogin();
+            return true;
+        }
+        return await manejarRespuestaAutenticacion(data, { fromSso: true });
+    } catch (error) {
+        console.error('Error SSO:', error);
+        return false;
+    }
+}
+
+function mostrarModalTrustedDevice(days) {
+    const modal = document.getElementById('trustedDeviceModal');
+    const msg = document.getElementById('trustedDeviceMessage');
+    if (msg) {
+        msg.textContent = `En este móvil no volveremos a pedirte verificación WhatsApp durante ${days || 90} días.`;
+    }
+    if (modal) {
+        modal.style.display = 'flex';
+        document.body.style.overflow = 'hidden';
+    }
+}
+
+function ocultarModalTrustedDevice() {
+    const modal = document.getElementById('trustedDeviceModal');
+    if (modal) {
+        modal.style.display = 'none';
+        if (!document.getElementById('twoFactorModal') || document.getElementById('twoFactorModal').style.display === 'none') {
+            if (!document.getElementById('loginModal') || document.getElementById('loginModal').style.display === 'none') {
+                document.body.style.overflow = '';
+            }
+        }
+    }
+}
+
+function finalizarAutenticacion(userData) {
+    pending2fa = false;
+    twoFactorChallengeId = null;
+    detenerPolling2fa();
+    isAuthenticated = true;
+    currentUser = userData;
+    ocultarModalLogin();
+    ocultarModal2fa();
+    ocultarModalTrustedDevice();
+    syncIncidenciasAuthState();
+    actualizarUIUsuario();
+}
+
+async function registrarDispositivoConfianza(trust) {
+    try {
+        await fetch('/api/auth/trusted-device', {
+            method: 'POST',
+            headers: getAuthRequestHeaders(),
+            credentials: 'same-origin',
+            body: JSON.stringify({ trust: !!trust }),
+        });
+    } catch (error) {
+        console.error('Error registrando dispositivo de confianza:', error);
+    }
+}
+
+async function completarAutenticacionTras2fa(data) {
+    if (data.offer_trusted_device && isMobileClient()) {
+        mostrarModalTrustedDevice(data.trusted_device_days);
+        return new Promise((resolve) => {
+            const btnYes = document.getElementById('btnTrustDeviceYes');
+            const btnNo = document.getElementById('btnTrustDeviceNo');
+            const onYes = async () => {
+                cleanup();
+                await registrarDispositivoConfianza(true);
+                finalizarAutenticacion(data.user_data);
+                showNotification('Dispositivo de confianza registrado', 'success');
+                resolve(true);
+            };
+            const onNo = async () => {
+                cleanup();
+                await registrarDispositivoConfianza(false);
+                finalizarAutenticacion(data.user_data);
+                showNotification('Verificación completada', 'success');
+                resolve(true);
+            };
+            function cleanup() {
+                if (btnYes) btnYes.removeEventListener('click', onYes);
+                if (btnNo) btnNo.removeEventListener('click', onNo);
+            }
+            if (btnYes) btnYes.addEventListener('click', onYes);
+            if (btnNo) btnNo.addEventListener('click', onNo);
+        });
+    }
+    finalizarAutenticacion(data.user_data);
+    showNotification('Verificación completada', 'success');
+    return true;
+}
+
+async function manejarRespuestaAutenticacion(data, options = {}) {
+    if (data.skipped_2fa) {
+        finalizarAutenticacion(data.user_data || data.user);
+        showNotification('Login exitoso (dispositivo de confianza)', 'success');
+        return true;
+    }
+    if (data.requires_2fa) {
+        pending2fa = true;
+        twoFactorChallengeId = data.challenge_id || null;
+        isAuthenticated = false;
+        currentUser = null;
+        ocultarModalLogin();
+        mostrarModal2fa({
+            verification_code: data.verification_code || '',
+            masked_phone: data.masked_phone,
+            whatsapp_error: data.whatsapp_error,
+            challenge_id: data.challenge_id,
+            whatsapp_confirm_url: data.whatsapp_confirm_url,
+            is_mobile_client: data.is_mobile_client,
+        });
+        iniciarPolling2fa();
+        syncIncidenciasAuthState();
+        actualizarUIUsuario();
+        if (data.whatsapp_sent) {
+            showNotification(
+                isMobileClient()
+                    ? 'Pulsa «Confirmar en WhatsApp» o responde al mensaje'
+                    : 'Responde por WhatsApp con el código recibido',
+                'info'
+            );
+        } else if (data.whatsapp_error || data.warning) {
+            showNotification('No se pudo enviar el WhatsApp. Revisa la configuración.', 'warning');
+        }
+        return true;
+    }
+    if (data.authenticated || (data.success && data.user_data)) {
+        if (data.offer_trusted_device) {
+            await completarAutenticacionTras2fa(data);
+        } else {
+            finalizarAutenticacion(data.user_data || data.user);
+            showNotification(options.fromSso ? 'Acceso Malla completado' : 'Login exitoso', 'success');
+        }
+        return true;
+    }
+    return false;
+}
+
 async function verificarAutenticacion() {
     try {
         const response = await fetch('/api/auth-status', {
@@ -103,7 +276,11 @@ async function verificarAutenticacion() {
         });
         const data = await response.json();
         if (data.success && data.authenticated) {
-            finalizarAutenticacion(data.user_data);
+            if (data.offer_trusted_device) {
+                await completarAutenticacionTras2fa(data);
+            } else {
+                finalizarAutenticacion(data.user_data);
+            }
             return;
         }
         if (data.success && data.pending_2fa) {
@@ -142,18 +319,6 @@ async function verificarAutenticacion() {
         syncIncidenciasAuthState();
         mostrarModalLogin();
     }
-}
-
-function finalizarAutenticacion(userData) {
-    pending2fa = false;
-    twoFactorChallengeId = null;
-    detenerPolling2fa();
-    isAuthenticated = true;
-    currentUser = userData;
-    ocultarModalLogin();
-    ocultarModal2fa();
-    syncIncidenciasAuthState();
-    actualizarUIUsuario();
 }
 
 function mostrarModal2fa(info) {
@@ -221,8 +386,7 @@ async function consultarEstado2fa() {
         });
         const data = await response.json();
         if (data.success && data.verified && data.authenticated) {
-            finalizarAutenticacion(data.user_data);
-            showNotification('Verificación completada', 'success');
+            await completarAutenticacionTras2fa(data);
             return;
         }
         if (data.verification_code) {
@@ -306,6 +470,15 @@ function ocultarModalLogin() {
     }
 }
 
+function iniciarLoginSsoMalla() {
+    const url = (SSO_CONFIG && SSO_CONFIG.launch_url) || '';
+    if (!url) {
+        showNotification('Login Malla no configurado', 'warning');
+        return;
+    }
+    window.location.href = url;
+}
+
 async function hacerLogin() {
     const username = document.getElementById('loginUsername')?.value?.trim();
     const password = document.getElementById('loginPassword')?.value || '';
@@ -327,46 +500,7 @@ async function hacerLogin() {
         });
         const data = await response.json();
         if (data.success) {
-            if (data.skipped_2fa) {
-                finalizarAutenticacion(data.user_data || data.user);
-                showNotification('Login exitoso (dispositivo de confianza)', 'success');
-                document.getElementById('loginUsername').value = '';
-                document.getElementById('loginPassword').value = '';
-                return;
-            }
-            if (data.requires_2fa) {
-                pending2fa = true;
-                twoFactorChallengeId = data.challenge_id || null;
-                isAuthenticated = false;
-                currentUser = null;
-                ocultarModalLogin();
-                mostrarModal2fa({
-                verification_code: data.verification_code || '',
-                masked_phone: data.masked_phone,
-                whatsapp_error: data.whatsapp_error,
-                challenge_id: data.challenge_id,
-                whatsapp_confirm_url: data.whatsapp_confirm_url,
-                is_mobile_client: data.is_mobile_client,
-            });
-                iniciarPolling2fa();
-                syncIncidenciasAuthState();
-                actualizarUIUsuario();
-                document.getElementById('loginUsername').value = '';
-                document.getElementById('loginPassword').value = '';
-                if (data.whatsapp_sent) {
-                    showNotification(
-                        isMobileClient()
-                            ? 'Pulsa «Confirmar en WhatsApp» o responde al mensaje'
-                            : 'Responde por WhatsApp con el código recibido',
-                        'info'
-                    );
-                } else {
-                    showNotification('No se pudo enviar el WhatsApp. Revisa la configuración.', 'warning');
-                }
-                return;
-            }
-            finalizarAutenticacion(data.user_data || data.user);
-            showNotification('Login exitoso', 'success');
+            await manejarRespuestaAutenticacion(data);
             document.getElementById('loginUsername').value = '';
             document.getElementById('loginPassword').value = '';
         } else if (errorDiv) {
@@ -2777,10 +2911,15 @@ async function checkHealth() {
 
 // Event listeners
 document.addEventListener('DOMContentLoaded', async function() {
-    await verificarAutenticacion();
+    const ssoHandled = await procesarSsoTokenDesdeUrl();
+    if (!ssoHandled) {
+        await verificarAutenticacion();
+    }
 
     const btnLogin = document.getElementById('btnLogin');
     if (btnLogin) btnLogin.addEventListener('click', hacerLogin);
+    const btnSsoMalla = document.getElementById('btnSsoMalla');
+    if (btnSsoMalla) btnSsoMalla.addEventListener('click', iniciarLoginSsoMalla);
     const loginPassword = document.getElementById('loginPassword');
     if (loginPassword) {
         loginPassword.addEventListener('keydown', function(e) {

@@ -49,6 +49,7 @@ from incidencias_bc import (
     sync_flask_session_to_device,
 )
 import trusted_device
+import sso_auth
 import pandas as pd
 from io import BytesIO
 import base64
@@ -946,6 +947,7 @@ PUBLIC_ROUTES = {
     '/api/whatsapp/respuesta',
     '/api/auth/2fa/estado',
     '/api/auth/2fa/reenviar',
+    '/api/auth/sso/exchange',
 }
 
 PUBLIC_ROUTE_PREFIXES = (
@@ -1008,6 +1010,22 @@ def _attach_trusted_device_if_mobile(response, gtask_auth: GTaskAuth, username: 
     return response
 
 
+def _should_offer_trusted_device(gtask_auth: GTaskAuth, username: str) -> bool:
+    if not trusted_device.should_register_trusted_device(request):
+        return False
+    user_id = _gtask_user_id_from_auth(gtask_auth)
+    device_id = get_device_id()
+    if not user_id or not device_id:
+        return False
+    return not trusted_device.can_skip_2fa(
+        request,
+        app.config["SECRET_KEY"],
+        user_id,
+        username,
+        device_id,
+    )
+
+
 def _complete_2fa_login(challenge_id: str):
     challenge = get_challenge(challenge_id)
     if not challenge or not challenge.get('verified'):
@@ -1021,33 +1039,29 @@ def _complete_2fa_login(challenge_id: str):
 
 
 def _jsonify_2fa_complete(gtask_auth: GTaskAuth, username: str):
-    resp = make_response(jsonify({
+    payload = {
         'success': True,
         'pending_2fa': False,
         'verified': True,
         'authenticated': True,
         'user_data': gtask_auth.current_user,
-    }))
-    return _attach_trusted_device_if_mobile(resp, gtask_auth, username)
+    }
+    if _should_offer_trusted_device(gtask_auth, username):
+        payload['offer_trusted_device'] = True
+        payload['trusted_device_days'] = trusted_device.TRUSTED_DEVICE_DAYS
+    return make_response(jsonify(payload))
 
 
-def _gtask_login_handler():
-    data = request.get_json() or {}
-    username = (data.get('username') or '').strip()
-    password = data.get('password') or ''
-    if not username or not password:
-        return jsonify({
-            'success': False,
-            'error': 'Usuario y contraseña son requeridos',
-        }), 400
-    gtask_auth = GTaskAuth()
-    result = gtask_auth.login(username, password)
-    if not result.get('success'):
-        return jsonify({
-            'success': False,
-            'error': result.get('error', 'Error en el login'),
-        }), 401
-
+def _after_identity_resolved(
+    gtask_auth: GTaskAuth,
+    username: str,
+    *,
+    auth_method: str = 'legacy',
+):
+    """
+    Tras identidad GTask válida (login legacy o SSO), aplica 2FA WhatsApp o sesión.
+    Conserva QR (escritorio), wa.me (móvil) y dispositivo de confianza.
+    """
     if not is_2fa_enabled():
         persist_gtask_login(gtask_auth, username)
         return jsonify({
@@ -1055,6 +1069,7 @@ def _gtask_login_handler():
             'message': 'Login exitoso',
             'user_data': gtask_auth.current_user,
             'user': gtask_auth.current_user,
+            'auth_method': auth_method,
         })
 
     user_id = _gtask_user_id_from_auth(gtask_auth)
@@ -1074,6 +1089,7 @@ def _gtask_login_handler():
             'user': gtask_auth.current_user,
             'trusted_device': True,
             'skipped_2fa': True,
+            'auth_method': auth_method,
         })
 
     try:
@@ -1100,6 +1116,7 @@ def _gtask_login_handler():
         'expires_in': info['expires_in'],
         'whatsapp_confirm_url': info.get('whatsapp_confirm_url'),
         'is_mobile_client': trusted_device.is_mobile_request(request),
+        'auth_method': auth_method,
     }
     if whatsapp_error:
         response['whatsapp_error'] = whatsapp_error
@@ -1109,6 +1126,26 @@ def _gtask_login_handler():
     return jsonify(response)
 
 
+def _gtask_login_handler():
+    data = request.get_json() or {}
+    username = (data.get('username') or '').strip()
+    password = data.get('password') or ''
+    if not username or not password:
+        return jsonify({
+            'success': False,
+            'error': 'Usuario y contraseña son requeridos',
+        }), 400
+    gtask_auth = GTaskAuth()
+    result = gtask_auth.login(username, password)
+    if not result.get('success'):
+        return jsonify({
+            'success': False,
+            'error': result.get('error', 'Error en el login'),
+        }), 401
+
+    return _after_identity_resolved(gtask_auth, username, auth_method='legacy')
+
+
 @app.route('/api/login', methods=['POST'])
 def login():
     """Login de usuario del navegador contra GTask."""
@@ -1116,6 +1153,67 @@ def login():
         return _gtask_login_handler()
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/auth/sso/exchange', methods=['POST'])
+def auth_sso_exchange():
+    """Intercambia token SSO de appdesktop por flujo 2FA/sesión GIS."""
+    if not sso_auth.is_sso_enabled():
+        return jsonify({
+            'success': False,
+            'error': 'Login SSO no habilitado',
+        }), 403
+    data = request.get_json(silent=True) or {}
+    token = (data.get('token') or '').strip()
+    try:
+        payload = sso_auth.verify_exchange_token(token)
+        gtask_auth = sso_auth.build_gtask_auth_from_sso(payload)
+        username = (payload.get('gtask_username') or '').strip()
+        return _after_identity_resolved(
+            gtask_auth,
+            username,
+            auth_method='sso',
+        )
+    except ValueError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 401
+    except Exception as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 500
+
+
+@app.route('/api/auth/trusted-device', methods=['POST'])
+def auth_trusted_device():
+    """Registra (o rechaza) dispositivo de confianza tras 2FA en móvil."""
+    if not session.get('user_authenticated', False):
+        return jsonify({
+            'success': False,
+            'error': 'Debes completar la verificación antes',
+        }), 401
+    data = request.get_json(silent=True) or {}
+    trust = bool(data.get('trust'))
+    username = (session.get('user_username') or '').strip()
+    user_data = session.get('user_data') or {}
+    user_id = str(user_data.get('_id') or user_data.get('id') or '').strip()
+    device_id = get_device_id()
+    if not trust:
+        return jsonify({'success': True, 'trusted': False})
+    if not username or not user_id or not device_id:
+        return jsonify({
+            'success': False,
+            'error': 'No se pudo registrar el dispositivo',
+        }), 400
+    resp = make_response(jsonify({
+        'success': True,
+        'trusted': True,
+        'trusted_device_days': trusted_device.TRUSTED_DEVICE_DAYS,
+    }))
+    trusted_device.attach_trusted_device_cookie(
+        resp,
+        app.config['SECRET_KEY'],
+        user_id,
+        username,
+        device_id,
+    )
+    return resp
 
 
 @app.route('/api/logout', methods=['POST'])
@@ -1338,7 +1436,12 @@ def api_whatsapp_ultima_respuesta():
 @app.route('/')
 def index():
     """Página principal de la aplicación GIS"""
-    return render_template('index.html', incidencias_url=INCIDENCIAS_URL)
+    return render_template(
+        'index.html',
+        incidencias_url=INCIDENCIAS_URL,
+        sso_enabled=sso_auth.is_sso_enabled(),
+        sso_launch_url=sso_auth.sso_launch_url(),
+    )
 
 @app.route('/api/geodata')
 def get_geo_data():
