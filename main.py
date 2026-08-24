@@ -5,7 +5,9 @@ Autor: Andreu
 Fecha: 2025
 """
 
-from flask import Flask, render_template, jsonify, request, send_file
+from functools import wraps
+
+from flask import Flask, render_template, jsonify, request, send_file, session, make_response, Response
 from flask_cors import CORS
 import pyodbc
 import json
@@ -13,15 +15,40 @@ import requests
 import os
 import math
 from datetime import datetime, date
+from config.config import Config
 from config.database import get_db_connection
 from config.api_keys import GEOCODING_SERVICES, SEARCH_CONFIG
 from config.bc_incidencias import INCIDENCIAS_URL, BC_CONFIG
+from gtask_auth import GTaskAuth
+from gtask_service import init_backend_gtask_login
+import whatsapp_client
+from auth_2fa import (
+    is_2fa_enabled,
+    create_pending_2fa,
+    get_2fa_status,
+    get_challenge,
+    try_verify_from_whatsapp,
+    build_gtask_auth_from_challenge,
+    clear_challenge,
+    resend_whatsapp,
+)
+from whatsapp_respuestas import (
+    registrar_respuesta,
+    obtener_ultima_respuesta,
+    obtener_respuesta_por_telefono,
+    obtener_respuesta_por_id_registro,
+)
 from incidencias_bc import (
+    get_device_id,
     get_device_session,
-    get_gtask_user_id_from_session,
+    get_gtask_user_id,
     get_open_incidences_for_resource,
     bc_post_json_text,
+    persist_gtask_login,
+    clear_gtask_login,
+    sync_flask_session_to_device,
 )
+import trusted_device
 import pandas as pd
 from io import BytesIO
 import base64
@@ -897,9 +924,416 @@ def update_mobiliario_coordinates(cursor, emplazamiento_id, lat, lon):
 app = Flask(__name__)
 CORS(app)
 
+app.config['SECRET_KEY'] = Config.SECRET_KEY
+app.config['SESSION_COOKIE_HTTPONLY'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
+
 # Configuración de la base de datos
 app.config['SQLALCHEMY_DATABASE_URI'] = 'mssql+pyodbc://SA:SA1234sa@192.168.10.190/Malla2009?driver=ODBC+Driver+17+for+SQL+Server'
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# Login automático GTask del backend (APIs internas; no sustituye el login del navegador)
+init_backend_gtask_login()
+
+PUBLIC_ROUTES = {
+    '/',
+    '/api/login',
+    '/api/logout',
+    '/api/auth-status',
+    '/api/gtask/login',
+    '/api/gtask/status',
+    '/api/gtask/logout',
+    '/api/whatsapp/respuesta',
+    '/api/auth/2fa/estado',
+    '/api/auth/2fa/reenviar',
+}
+
+PUBLIC_ROUTE_PREFIXES = (
+    '/static/',
+)
+
+
+def requiere_autenticacion(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        if not session.get('user_authenticated', False):
+            return jsonify({
+                'success': False,
+                'error': 'Autenticación requerida. Por favor, inicia sesión primero.',
+                'requires_auth': True,
+            }), 401
+        return f(*args, **kwargs)
+    return decorated_function
+
+
+@app.before_request
+def verificar_autenticacion():
+    if request.path in PUBLIC_ROUTES:
+        return None
+    if any(request.path.startswith(prefix) for prefix in PUBLIC_ROUTE_PREFIXES):
+        return None
+    if session.get('user_authenticated', False):
+        sync_flask_session_to_device()
+        return None
+    if session.get('pending_2fa_id') and request.path.startswith('/api/auth/2fa/'):
+        return None
+    if request.path.startswith('/api/'):
+        return jsonify({
+            'success': False,
+            'error': 'Autenticación requerida. Por favor, inicia sesión primero.',
+            'requires_auth': True,
+        }), 401
+    return None
+
+
+def _gtask_user_id_from_auth(gtask_auth: GTaskAuth) -> str:
+    user = gtask_auth.current_user or {}
+    uid = user.get("_id") or user.get("id")
+    return str(uid).strip() if uid else ""
+
+
+def _attach_trusted_device_if_mobile(response, gtask_auth: GTaskAuth, username: str):
+    if not trusted_device.should_register_trusted_device(request):
+        return response
+    user_id = _gtask_user_id_from_auth(gtask_auth)
+    device_id = get_device_id()
+    if user_id and device_id:
+        trusted_device.attach_trusted_device_cookie(
+            response,
+            app.config["SECRET_KEY"],
+            user_id,
+            username,
+            device_id,
+        )
+    return response
+
+
+def _complete_2fa_login(challenge_id: str):
+    challenge = get_challenge(challenge_id)
+    if not challenge or not challenge.get('verified'):
+        return None
+    gtask_auth = build_gtask_auth_from_challenge(challenge)
+    username = challenge.get('username') or ''
+    persist_gtask_login(gtask_auth, username)
+    session.pop('pending_2fa_id', None)
+    clear_challenge(challenge_id)
+    return gtask_auth, username
+
+
+def _jsonify_2fa_complete(gtask_auth: GTaskAuth, username: str):
+    resp = make_response(jsonify({
+        'success': True,
+        'pending_2fa': False,
+        'verified': True,
+        'authenticated': True,
+        'user_data': gtask_auth.current_user,
+    }))
+    return _attach_trusted_device_if_mobile(resp, gtask_auth, username)
+
+
+def _gtask_login_handler():
+    data = request.get_json() or {}
+    username = (data.get('username') or '').strip()
+    password = data.get('password') or ''
+    if not username or not password:
+        return jsonify({
+            'success': False,
+            'error': 'Usuario y contraseña son requeridos',
+        }), 400
+    gtask_auth = GTaskAuth()
+    result = gtask_auth.login(username, password)
+    if not result.get('success'):
+        return jsonify({
+            'success': False,
+            'error': result.get('error', 'Error en el login'),
+        }), 401
+
+    if not is_2fa_enabled():
+        persist_gtask_login(gtask_auth, username)
+        return jsonify({
+            'success': True,
+            'message': 'Login exitoso',
+            'user_data': gtask_auth.current_user,
+            'user': gtask_auth.current_user,
+        })
+
+    user_id = _gtask_user_id_from_auth(gtask_auth)
+    device_id = get_device_id()
+    if trusted_device.can_skip_2fa(
+        request,
+        app.config['SECRET_KEY'],
+        user_id,
+        username,
+        device_id,
+    ):
+        persist_gtask_login(gtask_auth, username)
+        return jsonify({
+            'success': True,
+            'message': 'Login exitoso (dispositivo de confianza)',
+            'user_data': gtask_auth.current_user,
+            'user': gtask_auth.current_user,
+            'trusted_device': True,
+            'skipped_2fa': True,
+        })
+
+    try:
+        info, whatsapp_error = create_pending_2fa(gtask_auth, username)
+    except ValueError as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 400
+    except Exception as exc:
+        return jsonify({
+            'success': False,
+            'error': f'Error iniciando verificación WhatsApp: {exc}',
+        }), 502
+
+    session['pending_2fa_id'] = info['challenge_id']
+    session['user_authenticated'] = False
+
+    response = {
+        'success': True,
+        'requires_2fa': True,
+        'message': 'Verificación WhatsApp requerida',
+        'challenge_id': info['challenge_id'],
+        'verification_code': info['verification_code'],
+        'masked_phone': info['masked_phone'],
+        'whatsapp_sent': info['whatsapp_sent'],
+        'expires_in': info['expires_in'],
+        'whatsapp_confirm_url': info.get('whatsapp_confirm_url'),
+        'is_mobile_client': trusted_device.is_mobile_request(request),
+    }
+    if whatsapp_error:
+        response['whatsapp_error'] = whatsapp_error
+        response['warning'] = (
+            'No se pudo enviar el WhatsApp. Compruebe GIS_PUBLIC_URL y Apiwhats.'
+        )
+    return jsonify(response)
+
+
+@app.route('/api/login', methods=['POST'])
+def login():
+    """Login de usuario del navegador contra GTask."""
+    try:
+        return _gtask_login_handler()
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/logout', methods=['POST'])
+def logout():
+    try:
+        # Solo cierra la sesión del navegador; el login automático del backend se mantiene
+        clear_gtask_login()
+        resp = make_response(jsonify({'success': True, 'message': 'Sesión cerrada correctamente'}))
+        trusted_device.clear_trusted_device_cookie(resp)
+        return resp
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/auth-status', methods=['GET'])
+def auth_status():
+    try:
+        pending_id = session.get('pending_2fa_id')
+        if pending_id and not session.get('user_authenticated', False):
+            status = get_2fa_status(pending_id)
+            if status.get('verified'):
+                completed = _complete_2fa_login(pending_id)
+                if completed:
+                    gtask_auth, username = completed
+                    return _jsonify_2fa_complete(gtask_auth, username)
+            if status.get('expired'):
+                session.pop('pending_2fa_id', None)
+                clear_challenge(pending_id)
+                return jsonify({
+                    'success': True,
+                    'authenticated': False,
+                    'pending_2fa': False,
+                    'expired': True,
+                })
+            return jsonify({
+                'success': True,
+                'authenticated': False,
+                'pending_2fa': True,
+                'challenge_id': pending_id,
+                'verification_code': status.get('verification_code'),
+                'masked_phone': status.get('masked_phone'),
+                'whatsapp_sent': status.get('whatsapp_sent'),
+                'whatsapp_error': status.get('whatsapp_error'),
+                'expires_in': status.get('expires_in'),
+                'whatsapp_confirm_url': status.get('whatsapp_confirm_url'),
+                'is_mobile_client': trusted_device.is_mobile_request(request),
+            })
+
+        authenticated = bool(session.get('user_authenticated', False))
+        user_data = session.get('user_data') if authenticated else None
+        return jsonify({
+            'success': True,
+            'authenticated': authenticated,
+            'pending_2fa': False,
+            'user_data': user_data,
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/auth/2fa/estado', methods=['GET'])
+def auth_2fa_estado():
+    pending_id = session.get('pending_2fa_id')
+    if not pending_id:
+        return jsonify({
+            'success': True,
+            'pending_2fa': False,
+            'verified': session.get('user_authenticated', False),
+        })
+    status = get_2fa_status(pending_id)
+    if status.get('verified'):
+        completed = _complete_2fa_login(pending_id)
+        if completed:
+            gtask_auth, username = completed
+            return _jsonify_2fa_complete(gtask_auth, username)
+    if status.get('expired'):
+        session.pop('pending_2fa_id', None)
+        clear_challenge(pending_id)
+    return jsonify({'success': True, **status})
+
+
+@app.route('/api/auth/2fa/reenviar', methods=['POST'])
+def auth_2fa_reenviar():
+    pending_id = session.get('pending_2fa_id')
+    if not pending_id:
+        return jsonify({
+            'success': False,
+            'error': 'No hay verificación pendiente',
+        }), 400
+    try:
+        result = resend_whatsapp(pending_id)
+        return jsonify({'success': True, **result})
+    except Exception as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 502
+
+
+@app.route('/api/auth/2fa/qr', methods=['GET'])
+def auth_2fa_qr():
+    """PNG QR con enlace wa.me prefilled para confirmar 2FA desde el móvil (escritorio)."""
+    pending_id = session.get('pending_2fa_id')
+    if not pending_id:
+        return jsonify({'success': False, 'error': 'No hay verificación pendiente'}), 400
+    status = get_2fa_status(pending_id)
+    if status.get('expired'):
+        return jsonify({'success': False, 'error': 'Verificación expirada'}), 410
+    url = (status.get('whatsapp_confirm_url') or '').strip()
+    if not url.startswith('https://wa.me/'):
+        return jsonify({
+            'success': False,
+            'error': 'QR no disponible. Configure WHATSAPP_2FA_BUSINESS_PHONE.',
+        }), 404
+    try:
+        import qrcode
+
+        qr = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_M,
+            box_size=8,
+            border=2,
+        )
+        qr.add_data(url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color='black', back_color='white')
+        buf = BytesIO()
+        img.save(buf, format='PNG')
+        buf.seek(0)
+        return Response(buf.read(), mimetype='image/png')
+    except Exception as exc:
+        return jsonify({'success': False, 'error': str(exc)}), 500
+
+
+@app.route('/api/whatsapp/respuesta', methods=['POST'])
+def api_whatsapp_respuesta():
+    """
+    Callback de Apiwhats (/enviar-webhook): recibe la respuesta del usuario por WhatsApp.
+    Debe ser URL pública (GIS_PUBLIC_URL + /api/whatsapp/respuesta).
+    """
+    auth = request.headers.get('Authorization')
+    if not whatsapp_client.verificar_webhook_entrante(auth):
+        print(
+            "[WhatsApp] Webhook rechazado (401). Compruebe que WHATSAPP_WEBHOOK_API_KEY "
+            "en GIS coincide con WEBHOOK_RESPUESTA_OUTBOUND_API_KEY en Apiwhats, "
+            "o deje ambos vacios."
+        )
+        return jsonify({'ok': False, 'error': 'No autorizado'}), 401
+    data = request.get_json(silent=True) or {}
+    registro = registrar_respuesta(data)
+    id_registro = registro.get('id_registro') or ''
+    telefono = registro.get('telefono') or ''
+    texto = registro.get('texto') or ''
+    verified_id = None
+    if texto:
+        verified_id = try_verify_from_whatsapp(id_registro, telefono, texto)
+        if verified_id:
+            print(f"[2FA] Codigo verificado por WhatsApp (id={verified_id})")
+        else:
+            print(
+                f"[2FA] Respuesta WhatsApp sin coincidencia "
+                f"(id_registro={id_registro!r}, telefono={telefono!r}, texto={texto!r})"
+            )
+    print(
+        f"[WhatsApp] Respuesta de {registro.get('telefono')}: "
+        f"{registro.get('texto')!r} (id_registro={registro.get('id_registro')})"
+    )
+    return jsonify({'ok': True, 'recibido': True})
+
+
+@app.route('/api/whatsapp/test-enviar', methods=['POST'])
+@requiere_autenticacion
+def api_whatsapp_test_enviar():
+    """Prueba: envía mensaje WhatsApp y opcionalmente espera respuesta vía webhook."""
+    body = request.get_json(silent=True) or {}
+    telefono = (body.get('telefono') or '34651049109').strip()
+    mensaje = (body.get('mensaje') or '').strip() or (
+        'Prueba GIS: responde a este mensaje para comprobar la integración WhatsApp.'
+    )
+    usar_webhook = body.get('usar_webhook', True)
+    id_registro = (body.get('id_registro') or 'GIS-TEST').strip()
+    try:
+        if usar_webhook:
+            resultado = whatsapp_client.enviar_mensaje_con_webhook(
+                telefono, mensaje, id_registro=id_registro
+            )
+            callback = whatsapp_client.callback_respuesta_url()
+        else:
+            resultado = whatsapp_client.enviar_mensaje(telefono, mensaje)
+            callback = None
+        return jsonify({
+            'success': True,
+            'ok': resultado.get('ok', True),
+            'detalle': resultado.get('detalle'),
+            'meta': resultado.get('meta'),
+            'telefono': telefono,
+            'webhook_callback': callback,
+            'id_registro': id_registro if usar_webhook else None,
+        })
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 502
+
+
+@app.route('/api/whatsapp/ultima-respuesta', methods=['GET'])
+@requiere_autenticacion
+def api_whatsapp_ultima_respuesta():
+    """Consulta la última respuesta WhatsApp recibida en este servidor."""
+    telefono = (request.args.get('telefono') or '').strip()
+    id_registro = (request.args.get('id_registro') or '').strip()
+    if id_registro:
+        reg = obtener_respuesta_por_id_registro(id_registro)
+    elif telefono:
+        reg = obtener_respuesta_por_telefono(telefono)
+    else:
+        reg = obtener_ultima_respuesta()
+    return jsonify({
+        'success': True,
+        'respuesta': reg,
+        'tiene_respuesta': reg is not None,
+    })
+
 
 @app.route('/')
 def index():
@@ -2469,8 +2903,7 @@ def api_incidencias_abiertas():
     if not resource_id:
         return jsonify({'success': False, 'error': 'Indique parada o recurso'}), 400
 
-    sess = get_device_session()
-    gtask_user_id = get_gtask_user_id_from_session(sess)
+    gtask_user_id = get_gtask_user_id()
     if not gtask_user_id:
         return jsonify({
             'success': True,
@@ -2530,18 +2963,7 @@ def api_incidencia_gtask():
 @app.route('/api/gtask/login', methods=['POST'])
 def gtask_login():
     try:
-        data = request.get_json() or {}
-        username = (data.get('username') or '').strip()
-        password = data.get('password') or ''
-        if not username or not password:
-            return jsonify({'success': False, 'error': 'Usuario y contraseña son requeridos'}), 400
-        sess = get_device_session()
-        gtask_auth = sess['gtask_auth']
-        result = gtask_auth.login(username, password)
-        if result.get('success'):
-            sess['user_data'] = gtask_auth.current_user
-            return jsonify({'success': True, 'message': 'Login exitoso', 'user': gtask_auth.current_user})
-        return jsonify(result), 401
+        return _gtask_login_handler()
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -2549,18 +2971,33 @@ def gtask_login():
 @app.route('/api/gtask/status', methods=['GET'])
 def gtask_status():
     try:
+        if session.get('user_authenticated') and session.get('user_data'):
+            user = session.get('user_data') or {}
+            return jsonify({
+                'success': True,
+                'is_authenticated': True,
+                'authenticated': True,
+                'user_data': user,
+                'user': {
+                    '_id': user.get('_id'),
+                    'username': user.get('username'),
+                },
+            })
+        sync_flask_session_to_device()
         sess = get_device_session()
         gtask_auth = sess['gtask_auth']
         if sess.get('user_data') and gtask_auth.is_token_valid():
             return jsonify({
                 'success': True,
                 'is_authenticated': True,
+                'authenticated': True,
+                'user_data': sess['user_data'],
                 'user': {
                     '_id': sess['user_data'].get('_id'),
                     'username': sess['user_data'].get('username'),
                 },
             })
-        return jsonify({'success': True, 'is_authenticated': False})
+        return jsonify({'success': True, 'is_authenticated': False, 'authenticated': False})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
 
@@ -2568,9 +3005,7 @@ def gtask_status():
 @app.route('/api/gtask/logout', methods=['POST'])
 def gtask_logout():
     try:
-        sess = get_device_session()
-        sess['user_data'] = None
-        sess['gtask_auth'].logout()
+        clear_gtask_login()
         return jsonify({'success': True, 'message': 'Logout exitoso'})
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500

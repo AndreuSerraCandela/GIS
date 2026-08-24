@@ -34,6 +34,11 @@ class Config:
     # Configuración de CORS
     CORS_ORIGINS = os.getenv('CORS_ORIGINS', '*').split(',')
 
+    # GTask (login de usuarios y servicios internos)
+    GTASK_API_URL = os.getenv('GTASK_API_URL', 'https://gtasks-api.deploy.malla.es').rstrip('/')
+    GTASK_USERNAME = os.getenv('GTASK_USERNAME', '')
+    GTASK_PASSWORD = os.getenv('GTASK_PASSWORD', '')
+
 class DevelopmentConfig(Config):
     """Configuración para desarrollo"""
     DEBUG = True

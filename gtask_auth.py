@@ -29,6 +29,11 @@ class GTaskAuth:
                     "username": login_response["username"],
                     "email": login_response.get("email", ""),
                 }
+                for key, value in login_response.items():
+                    if key in ("access_token", "password"):
+                        continue
+                    if key not in self.current_user and value is not None:
+                        self.current_user[key] = value
                 self.access_token = login_response["access_token"]
                 try:
                     decoded = jwt.decode(

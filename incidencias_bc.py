@@ -4,10 +4,12 @@ Integración BC / GTask para incidencias en popups (misma lógica que Rutas).
 import json
 import logging
 import uuid
+from datetime import datetime, timedelta
 from urllib.parse import quote
 
+import jwt
 import requests
-from flask import request
+from flask import request, session as flask_session
 
 from config.bc_incidencias import BC_CONFIG, get_bc_auth_header, get_bc_auth_credentials
 from gtask_auth import GTaskAuth
@@ -89,6 +91,67 @@ def bc_document_no_from_lista_row(inc: dict) -> str:
     return ""
 
 
+def _restore_token_expiry(gtask_auth: GTaskAuth, access_token: str):
+    try:
+        decoded = jwt.decode(access_token, options={"verify_signature": False})
+        exp = decoded.get("exp")
+        gtask_auth.token_expiry = (
+            datetime.fromtimestamp(exp) if exp else datetime.now() + timedelta(hours=24)
+        )
+    except Exception:
+        gtask_auth.token_expiry = datetime.now() + timedelta(hours=24)
+
+
+def persist_gtask_login(gtask_auth: GTaskAuth, username: str):
+    """Guarda login GTask en sesión Flask y sincroniza sesión por dispositivo."""
+    flask_session["user_authenticated"] = True
+    flask_session["user_username"] = username
+    flask_session["user_data"] = gtask_auth.current_user
+    flask_session["user_token"] = gtask_auth.access_token
+    apply_gtask_auth_to_device(gtask_auth)
+
+
+def apply_gtask_auth_to_device(gtask_auth: GTaskAuth):
+    sess = get_device_session()
+    sess["gtask_auth"] = gtask_auth
+    sess["user_data"] = gtask_auth.current_user
+
+
+def clear_gtask_login():
+    pending_id = flask_session.get("pending_2fa_id")
+    if pending_id:
+        try:
+            from auth_2fa import clear_challenge
+
+            clear_challenge(pending_id)
+        except Exception:
+            pass
+    flask_session.clear()
+    sess = get_device_session()
+    sess["user_data"] = None
+    sess["gtask_auth"].logout()
+
+
+def restore_gtask_auth_from_flask_session() -> GTaskAuth | None:
+    if not flask_session.get("user_authenticated"):
+        return None
+    user_data = flask_session.get("user_data")
+    token = flask_session.get("user_token")
+    if not user_data or not token:
+        return None
+    auth = GTaskAuth()
+    auth.current_user = user_data
+    auth.access_token = token
+    _restore_token_expiry(auth, token)
+    return auth
+
+
+def sync_flask_session_to_device():
+    auth = restore_gtask_auth_from_flask_session()
+    if auth and auth.is_token_valid():
+        apply_gtask_auth_to_device(auth)
+
+
 def get_gtask_user_id_from_session(sess) -> str:
     user = sess.get("user_data") or {}
     gtask_auth = sess.get("gtask_auth")
@@ -96,6 +159,16 @@ def get_gtask_user_id_from_session(sess) -> str:
         user = gtask_auth.current_user
     uid = user.get("_id") or user.get("id")
     return str(uid).strip() if uid else ""
+
+
+def get_gtask_user_id() -> str:
+    if flask_session.get("user_authenticated"):
+        user = flask_session.get("user_data") or {}
+        uid = user.get("_id") or user.get("id")
+        if uid:
+            return str(uid).strip()
+    sync_flask_session_to_device()
+    return get_gtask_user_id_from_session(get_device_session())
 
 
 def get_open_incidences_for_resource(resource_id: str, gtask_user_id: str) -> list:

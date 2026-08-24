@@ -2,7 +2,10 @@
 <html lang="es">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <meta name="theme-color" content="#667eea">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
     <title>GIS Web App</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
     <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
@@ -15,6 +18,11 @@
                     <h1>🗺️ Sistema de Información Geográfica</h1>
                     <p>Aplicación web para visualización de datos geoespaciales</p>
                 </div>
+                <div class="header-right">
+                <button type="button" id="userInfo" class="header-user-block" style="display: none;" title="Cerrar sesión" aria-label="Cerrar sesión">
+                    <span id="userName"></span>
+                </button>
+                <button type="button" id="btnMenuMobile" class="btn-menu-mobile" aria-label="Abrir menú">☰</button>
                 <div class="legend-header">
                     <h4>Leyenda</h4>
                     <div class="legend-item">
@@ -46,11 +54,15 @@
                         <span>Punto de búsqueda</span>
                     </div>
                 </div>
+                </div>
             </div>
         </header>
         
         <main>
-            <div class="controls">
+            <div id="sidebarOverlay" class="sidebar-overlay" aria-hidden="true"></div>
+            <div id="sidebarDrawer" class="controls sidebar-drawer">
+                <button type="button" id="btnCerrarMenu" class="btn-cerrar-menu" aria-label="Cerrar menú">×</button>
+                <div class="sidebar-drawer-scroll">
                 <!-- Nueva sección de búsqueda -->
                 <div class="search-section">
                     <h3>🔍 Buscar en el Mapa</h3>
@@ -256,6 +268,10 @@
                         📥 Exportar Recursos Seleccionados
                     </button>
                 </div>
+                <div id="drawerLogoutWrap" class="filters-section drawer-logout-wrap" style="display: none; margin-top: 1rem; padding-top: 1rem; border-top: 1px solid #e9ecef;">
+                    <button type="button" id="btnLogout" class="btn btn-secondary" style="width: 100%; display: flex; align-items: center; justify-content: center; gap: 0.5rem;">🚪 Cerrar sesión</button>
+                </div>
+                </div>
             </div>
             
             <div class="map-container">
@@ -335,6 +351,62 @@
             </div>
             <div class="modal-footer">
                 <button id="cancelAddressPicker" class="btn btn-secondary">Cancelar</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal de Login -->
+    <div id="loginModal" class="modal" style="display: flex; z-index: 10001;">
+        <div class="modal-content" style="max-width: 400px;">
+            <div class="modal-header">
+                <h3 style="margin: 0;">🔐 Iniciar Sesión</h3>
+            </div>
+            <div class="modal-body">
+                <div id="loginError" style="display: none; color: red; margin-bottom: 1rem; padding: 0.5rem; background-color: #ffe6e6; border-radius: 4px;"></div>
+                <div class="form-group">
+                    <label for="loginUsername">Usuario GTask:</label>
+                    <input type="text" id="loginUsername" class="form-control" placeholder="Ingresa tu usuario" autocomplete="username">
+                </div>
+                <div class="form-group">
+                    <label for="loginPassword">Contraseña:</label>
+                    <input type="password" id="loginPassword" class="form-control" placeholder="Ingresa tu contraseña" autocomplete="current-password">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button id="btnLogin" class="btn btn-primary" style="width: 100%;">Iniciar Sesión</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal de verificación WhatsApp (2FA) -->
+    <div id="twoFactorModal" class="modal" style="display: none; z-index: 10002;">
+        <div class="modal-content" style="max-width: 420px;">
+            <div class="modal-header">
+                <h3 style="margin: 0;">📱 Verificación WhatsApp</h3>
+            </div>
+            <div class="modal-body">
+                <p id="twoFactorInstructions" style="margin-top: 0;">
+                    Hemos enviado un mensaje a tu WhatsApp con el código. Responde con ese código para entrar.
+                </p>
+                <div id="twoFactorCodeDisplay" style="font-size: 2rem; font-weight: bold; letter-spacing: 0.35em; text-align: center; padding: 1rem; background: #f0f4ff; border-radius: 8px; margin: 1rem 0;"></div>
+                <div id="twoFactorQrWrap" style="display: none; text-align: center; margin: 0 0 1rem;">
+                    <p id="twoFactorQrHint" style="color: #555; font-size: 0.9rem; margin-bottom: 0.5rem;">
+                        Escanea con el móvil para abrir WhatsApp con el código listo y envíalo:
+                    </p>
+                    <img id="twoFactorQrImg" src="" alt="QR para confirmar en WhatsApp" width="200" height="200"
+                         style="max-width: 200px; width: 100%; height: auto; border-radius: 8px; border: 1px solid #e0e0e0; background: #fff;">
+                </div>
+                <p id="twoFactorPhoneHint" style="color: #555; font-size: 0.9rem; margin-bottom: 1rem;"></p>
+                <a id="btnConfirmWhatsapp2fa" class="btn btn-primary" href="#" target="_blank" rel="noopener noreferrer" style="display: none; width: 100%; text-align: center; margin-bottom: 0.75rem; text-decoration: none;">
+                    Confirmar en WhatsApp
+                </a>
+                <p id="twoFactorWaiting" style="color: #555; font-size: 0.9rem; margin-bottom: 0;">Esperando tu respuesta por WhatsApp…</p>
+                <div id="twoFactorError" style="display: none; color: #b00020; margin-bottom: 1rem; padding: 0.5rem; background-color: #ffe6e6; border-radius: 4px;"></div>
+                <div id="twoFactorWarning" style="display: none; color: #8a6d00; margin-bottom: 1rem; padding: 0.5rem; background-color: #fff8e1; border-radius: 4px;"></div>
+            </div>
+            <div class="modal-footer" style="display: flex; flex-direction: column; gap: 0.5rem;">
+                <button id="btnResend2fa" class="btn btn-secondary" style="width: 100%;">Reenviar WhatsApp</button>
+                <button id="btnCancel2fa" class="btn btn-link" style="width: 100%;">Cancelar y volver al login</button>
             </div>
         </div>
     </div>

@@ -24,6 +24,9 @@ openpyxl>=3.1.0
 requests>=2.31.0
 PyJWT>=2.8.0
 
+# Códigos QR (2FA WhatsApp en escritorio)
+qrcode[pil]>=7.4.0
+
 # Servidor WSGI para producción (Windows/IIS)
 waitress>=2.1.2
 

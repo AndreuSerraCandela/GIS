@@ -1,5 +1,440 @@
 // JavaScript para la aplicación GIS Web App
 
+// Estado de autenticación (GTask)
+let isAuthenticated = false;
+let currentUser = null;
+let pending2fa = false;
+let twoFactorPollTimer = null;
+let twoFactorChallengeId = null;
+
+function isMobileClient() {
+    if (typeof window.matchMedia === 'function' && window.matchMedia('(max-width: 768px)').matches) {
+        return true;
+    }
+    return /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini|Mobile/i.test(
+        navigator.userAgent || ''
+    );
+}
+
+function getAuthRequestHeaders() {
+    const headers = { 'Content-Type': 'application/json' };
+    const deviceId = typeof getIncidenciasDeviceId === 'function' ? getIncidenciasDeviceId() : '';
+    if (deviceId) {
+        headers['X-Device-ID'] = deviceId;
+    }
+    if (isMobileClient()) {
+        headers['X-Client-Mobile'] = '1';
+    }
+    return headers;
+}
+
+function updateWhatsappConfirmButton(info) {
+    const btn = document.getElementById('btnConfirmWhatsapp2fa');
+    if (!btn) return;
+    const url = info && info.whatsapp_confirm_url;
+    const showOnMobile = url && isMobileClient();
+    if (url && showOnMobile) {
+        btn.href = url;
+        btn.style.display = 'block';
+    } else {
+        btn.href = '#';
+        btn.style.display = 'none';
+    }
+}
+
+function updateWhatsappConfirmQr(info) {
+    const wrap = document.getElementById('twoFactorQrWrap');
+    const img = document.getElementById('twoFactorQrImg');
+    if (!wrap || !img) return;
+    const url = info && info.whatsapp_confirm_url;
+    const showOnDesktop = url && !isMobileClient();
+    if (showOnDesktop) {
+        const challengeId = (info && info.challenge_id) || twoFactorChallengeId || '';
+        img.src = `/api/auth/2fa/qr?t=${encodeURIComponent(challengeId || String(Date.now()))}`;
+        wrap.style.display = 'block';
+    } else {
+        img.removeAttribute('src');
+        wrap.style.display = 'none';
+    }
+}
+
+function updateWhatsapp2faUi(info) {
+    updateWhatsappConfirmButton(info);
+    updateWhatsappConfirmQr(info);
+}
+
+const PUBLIC_API_FRAGMENTS = [
+    '/api/login',
+    '/api/logout',
+    '/api/auth-status',
+    '/api/auth/2fa/',
+    '/api/gtask/login',
+    '/api/gtask/status',
+    '/api/gtask/logout',
+];
+
+function isPublicApiUrl(url) {
+    return PUBLIC_API_FRAGMENTS.some((fragment) => url.includes(fragment));
+}
+
+// Interceptar fetch para manejar errores de autenticación
+const originalFetch = window.fetch;
+window.fetch = async function(...args) {
+    const response = await originalFetch(...args);
+    if (response.status === 401) {
+        const url = String(args[0] || '');
+        const isPublicRoute = isPublicApiUrl(url);
+        if (!isPublicRoute && !pending2fa) {
+            isAuthenticated = false;
+            currentUser = null;
+            syncIncidenciasAuthState();
+            actualizarUIUsuario();
+            mostrarModalLogin();
+        }
+    }
+    return response;
+};
+
+async function verificarAutenticacion() {
+    try {
+        const response = await fetch('/api/auth-status', {
+            headers: getAuthRequestHeaders(),
+            credentials: 'same-origin',
+        });
+        const data = await response.json();
+        if (data.success && data.authenticated) {
+            finalizarAutenticacion(data.user_data);
+            return;
+        }
+        if (data.success && data.pending_2fa) {
+            pending2fa = true;
+            twoFactorChallengeId = data.challenge_id || null;
+            isAuthenticated = false;
+            currentUser = null;
+            ocultarModalLogin();
+            mostrarModal2fa({
+                verification_code: data.verification_code || '',
+                masked_phone: data.masked_phone,
+                whatsapp_error: data.whatsapp_error,
+                challenge_id: data.challenge_id,
+                whatsapp_confirm_url: data.whatsapp_confirm_url,
+                is_mobile_client: data.is_mobile_client,
+            });
+            iniciarPolling2fa();
+            syncIncidenciasAuthState();
+            actualizarUIUsuario();
+            return;
+        }
+        pending2fa = false;
+        detenerPolling2fa();
+        isAuthenticated = false;
+        currentUser = null;
+        ocultarModal2fa();
+        mostrarModalLogin();
+        syncIncidenciasAuthState();
+        actualizarUIUsuario();
+    } catch (error) {
+        console.error('Error verificando autenticación:', error);
+        pending2fa = false;
+        detenerPolling2fa();
+        isAuthenticated = false;
+        currentUser = null;
+        syncIncidenciasAuthState();
+        mostrarModalLogin();
+    }
+}
+
+function finalizarAutenticacion(userData) {
+    pending2fa = false;
+    twoFactorChallengeId = null;
+    detenerPolling2fa();
+    isAuthenticated = true;
+    currentUser = userData;
+    ocultarModalLogin();
+    ocultarModal2fa();
+    syncIncidenciasAuthState();
+    actualizarUIUsuario();
+}
+
+function mostrarModal2fa(info) {
+    const modal = document.getElementById('twoFactorModal');
+    const codeDisplay = document.getElementById('twoFactorCodeDisplay');
+    const phoneHint = document.getElementById('twoFactorPhoneHint');
+    const warningDiv = document.getElementById('twoFactorWarning');
+    const errorDiv = document.getElementById('twoFactorError');
+    const instructions = document.getElementById('twoFactorInstructions');
+    if (errorDiv) errorDiv.style.display = 'none';
+    if (codeDisplay && info.verification_code) {
+        codeDisplay.textContent = info.verification_code;
+    }
+    if (instructions) {
+        instructions.textContent = isMobileClient()
+            ? 'Hemos enviado el código a tu WhatsApp. Pulsa el botón para abrir WhatsApp con el código listo y envíalo.'
+            : 'Hemos enviado el código a tu WhatsApp. Escanea el QR con el móvil o responde al mensaje con el código de abajo.';
+    }
+    if (phoneHint) {
+        phoneHint.textContent = info.masked_phone
+            ? `Mensaje enviado al WhatsApp terminado en ${info.masked_phone}`
+            : 'Comprueba tu WhatsApp para confirmar el acceso.';
+    }
+    updateWhatsapp2faUi(info);
+    if (warningDiv) {
+        if (info.whatsapp_error || info.warning) {
+            warningDiv.textContent = info.warning || info.whatsapp_error;
+            warningDiv.style.display = 'block';
+        } else {
+            warningDiv.style.display = 'none';
+        }
+    }
+    if (modal) {
+        modal.style.display = 'flex';
+        document.body.style.overflow = 'hidden';
+    }
+}
+
+function ocultarModal2fa() {
+    const modal = document.getElementById('twoFactorModal');
+    const qrImg = document.getElementById('twoFactorQrImg');
+    const qrWrap = document.getElementById('twoFactorQrWrap');
+    if (qrImg) qrImg.removeAttribute('src');
+    if (qrWrap) qrWrap.style.display = 'none';
+    if (modal) {
+        modal.style.display = 'none';
+        if (!document.getElementById('loginModal') || document.getElementById('loginModal').style.display === 'none') {
+            document.body.style.overflow = '';
+        }
+    }
+}
+
+function detenerPolling2fa() {
+    if (twoFactorPollTimer) {
+        clearInterval(twoFactorPollTimer);
+        twoFactorPollTimer = null;
+    }
+}
+
+async function consultarEstado2fa() {
+    try {
+        const response = await fetch('/api/auth/2fa/estado', {
+            headers: getAuthRequestHeaders(),
+            credentials: 'same-origin',
+        });
+        const data = await response.json();
+        if (data.success && data.verified && data.authenticated) {
+            finalizarAutenticacion(data.user_data);
+            showNotification('Verificación completada', 'success');
+            return;
+        }
+        if (data.verification_code) {
+            const codeDisplay = document.getElementById('twoFactorCodeDisplay');
+            if (codeDisplay) codeDisplay.textContent = data.verification_code;
+        }
+        updateWhatsapp2faUi(data);
+        if (data.expired) {
+            detenerPolling2fa();
+            pending2fa = false;
+            ocultarModal2fa();
+            mostrarModalLogin();
+            const errorDiv = document.getElementById('loginError');
+            if (errorDiv) {
+                errorDiv.textContent = 'La verificación ha expirado. Vuelve a iniciar sesión.';
+                errorDiv.style.display = 'block';
+            }
+        }
+    } catch (error) {
+        console.error('Error consultando estado 2FA:', error);
+    }
+}
+
+function iniciarPolling2fa() {
+    detenerPolling2fa();
+    twoFactorPollTimer = setInterval(consultarEstado2fa, 2000);
+}
+
+async function reenviarWhatsapp2fa() {
+    const warningDiv = document.getElementById('twoFactorWarning');
+    const errorDiv = document.getElementById('twoFactorError');
+    try {
+        if (errorDiv) errorDiv.style.display = 'none';
+        const response = await fetch('/api/auth/2fa/reenviar', {
+            method: 'POST',
+            headers: getAuthRequestHeaders(),
+            credentials: 'same-origin',
+        });
+        const data = await response.json();
+        if (data.success) {
+            if (warningDiv) warningDiv.style.display = 'none';
+            updateWhatsapp2faUi(data);
+            showNotification('WhatsApp reenviado', 'success');
+            return;
+        }
+        if (errorDiv) {
+            errorDiv.textContent = data.error || 'No se pudo reenviar el mensaje';
+            errorDiv.style.display = 'block';
+        }
+    } catch (error) {
+        console.error('Error reenviando WhatsApp:', error);
+        if (errorDiv) {
+            errorDiv.textContent = 'Error de conexión al reenviar';
+            errorDiv.style.display = 'block';
+        }
+    }
+}
+
+async function cancelar2fa() {
+    detenerPolling2fa();
+    pending2fa = false;
+    twoFactorChallengeId = null;
+    ocultarModal2fa();
+    await hacerLogout();
+    mostrarModalLogin();
+}
+
+function mostrarModalLogin() {
+    const modal = document.getElementById('loginModal');
+    if (modal) {
+        modal.style.display = 'flex';
+        document.body.style.overflow = 'hidden';
+    }
+}
+
+function ocultarModalLogin() {
+    const modal = document.getElementById('loginModal');
+    if (modal) {
+        modal.style.display = 'none';
+        document.body.style.overflow = '';
+    }
+}
+
+async function hacerLogin() {
+    const username = document.getElementById('loginUsername')?.value?.trim();
+    const password = document.getElementById('loginPassword')?.value || '';
+    const errorDiv = document.getElementById('loginError');
+    if (!username || !password) {
+        if (errorDiv) {
+            errorDiv.textContent = 'Por favor, ingresa usuario y contraseña';
+            errorDiv.style.display = 'block';
+        }
+        return;
+    }
+    try {
+        if (errorDiv) errorDiv.style.display = 'none';
+        const response = await fetch('/api/login', {
+            method: 'POST',
+            headers: getAuthRequestHeaders(),
+            credentials: 'same-origin',
+            body: JSON.stringify({ username, password }),
+        });
+        const data = await response.json();
+        if (data.success) {
+            if (data.skipped_2fa) {
+                finalizarAutenticacion(data.user_data || data.user);
+                showNotification('Login exitoso (dispositivo de confianza)', 'success');
+                document.getElementById('loginUsername').value = '';
+                document.getElementById('loginPassword').value = '';
+                return;
+            }
+            if (data.requires_2fa) {
+                pending2fa = true;
+                twoFactorChallengeId = data.challenge_id || null;
+                isAuthenticated = false;
+                currentUser = null;
+                ocultarModalLogin();
+                mostrarModal2fa({
+                verification_code: data.verification_code || '',
+                masked_phone: data.masked_phone,
+                whatsapp_error: data.whatsapp_error,
+                challenge_id: data.challenge_id,
+                whatsapp_confirm_url: data.whatsapp_confirm_url,
+                is_mobile_client: data.is_mobile_client,
+            });
+                iniciarPolling2fa();
+                syncIncidenciasAuthState();
+                actualizarUIUsuario();
+                document.getElementById('loginUsername').value = '';
+                document.getElementById('loginPassword').value = '';
+                if (data.whatsapp_sent) {
+                    showNotification(
+                        isMobileClient()
+                            ? 'Pulsa «Confirmar en WhatsApp» o responde al mensaje'
+                            : 'Responde por WhatsApp con el código recibido',
+                        'info'
+                    );
+                } else {
+                    showNotification('No se pudo enviar el WhatsApp. Revisa la configuración.', 'warning');
+                }
+                return;
+            }
+            finalizarAutenticacion(data.user_data || data.user);
+            showNotification('Login exitoso', 'success');
+            document.getElementById('loginUsername').value = '';
+            document.getElementById('loginPassword').value = '';
+        } else if (errorDiv) {
+            errorDiv.textContent = data.error || 'Error al iniciar sesión';
+            errorDiv.style.display = 'block';
+        }
+    } catch (error) {
+        console.error('Error en login:', error);
+        if (errorDiv) {
+            errorDiv.textContent = 'Error de conexión. Por favor, intenta de nuevo.';
+            errorDiv.style.display = 'block';
+        }
+    }
+}
+
+async function hacerLogout() {
+    try {
+        await fetch('/api/logout', { method: 'POST' });
+    } catch (error) {
+        console.error('Error en logout:', error);
+    }
+    detenerPolling2fa();
+    pending2fa = false;
+    twoFactorChallengeId = null;
+    isAuthenticated = false;
+    currentUser = null;
+    syncIncidenciasAuthState();
+    actualizarUIUsuario();
+    ocultarModal2fa();
+    mostrarModalLogin();
+    showNotification('Sesión cerrada', 'info');
+}
+
+function setupLogoutButton(el) {
+    if (!el) return;
+    const newEl = el.cloneNode(true);
+    el.parentNode.replaceChild(newEl, el);
+    newEl.addEventListener('click', hacerLogout);
+    return newEl;
+}
+
+function actualizarUIUsuario() {
+    const userInfo = document.getElementById('userInfo');
+    const btnLogout = document.getElementById('btnLogout');
+    const drawerLogoutWrap = document.getElementById('drawerLogoutWrap');
+    if (isAuthenticated && currentUser) {
+        if (userInfo) {
+            userInfo.style.display = 'flex';
+            setupLogoutButton(userInfo);
+        }
+        const userNameEl = document.getElementById('userName');
+        if (userNameEl) {
+            const name = currentUser.name || currentUser.username || currentUser.nombre || 'Usuario';
+            userNameEl.textContent = name;
+        }
+        if (drawerLogoutWrap) drawerLogoutWrap.style.display = 'block';
+        setupLogoutButton(btnLogout);
+    } else {
+        if (userInfo) userInfo.style.display = 'none';
+        if (drawerLogoutWrap) drawerLogoutWrap.style.display = 'none';
+    }
+}
+
+function syncIncidenciasAuthState() {
+    incidenciasIsAuthenticated = isAuthenticated;
+    incidenciasCurrentUser = currentUser;
+}
+
 // Inicializar el mapa
 let map;
 let geoData = [];
@@ -242,12 +677,11 @@ function getIncidenciasBotonesHtml(parada, recurso) {
         </div>`;
 }
 
-/** Delegación en el mapa: los botones funcionan aunque el popup se regenere con setPopupContent */
+/** Delegación global: botones de incidencia en popups (también si el popup está en body en móvil) */
 function initIncidenciasPopupDelegation() {
     if (!map || map._incidenciasDelegationInit) return;
     map._incidenciasDelegationInit = true;
-    const container = map.getContainer();
-    container.addEventListener('click', function (e) {
+    document.addEventListener('click', function (e) {
         const btn = e.target.closest('[data-inc-action]');
         if (!btn || !btn.closest('.leaflet-popup')) return;
         L.DomEvent.preventDefault(e);
@@ -275,19 +709,7 @@ function setupPopupIncidenciaButtons(marker) {
 }
 
 async function initIncidenciasAuth() {
-    getIncidenciasDeviceId();
-    try {
-        const r = await fetch('/api/gtask/status', {
-            headers: { 'X-Device-ID': getIncidenciasDeviceId() }
-        });
-        const data = await r.json();
-        if (data.success && data.is_authenticated) {
-            incidenciasIsAuthenticated = true;
-            incidenciasCurrentUser = data.user;
-        }
-    } catch (e) {
-        console.warn('Estado GTask no disponible:', e);
-    }
+    syncIncidenciasAuthState();
 }
 
 // Función para obtener el icono según el tipo de recurso
@@ -492,7 +914,7 @@ function crearPopupRecurso(marker, recurso) {
     
     // Crear tooltip simple inicial (solo información básica)
     const simpleTooltip = `
-        <div style="max-width: 350px; padding: 5px;">
+        <div class="popup-simple-body" style="padding: 5px;">
             <h4>🔧 Recurso: ${recurso.Name || 'Sin nombre'}</h4>
             <p><strong>Nº:</strong> ${recurso.No_}</p>
             ${recurso['Tipo Recurso'] ? `<p><strong>Tipo de Recurso:</strong> ${recurso['Tipo Recurso']}</p>` : ''}
@@ -517,7 +939,7 @@ function crearPopupRecurso(marker, recurso) {
     `;
     
     // Usar tooltip simple inicialmente
-    marker.bindPopup(simpleTooltip, { maxWidth: 400 });
+    marker.bindPopup(simpleTooltip, getLeafletPopupOptions({ maxWidth: 400 }));
     setupPopupIncidenciaButtons(marker);
     
     let recursoDetallesCargados = false;
@@ -537,6 +959,7 @@ function crearPopupRecurso(marker, recurso) {
             </div>
         `;
         marker.setPopupContent(loadingTooltip);
+        refreshMobileMarkerPopup(marker);
         
         try {
             const urlCampanas = buildUrlCampanasRecurso(recurso.No_);
@@ -551,15 +974,15 @@ function crearPopupRecurso(marker, recurso) {
                 fetch(urlDetallesFull),
                 fetch(urlCampanas)
             ]);
-
+            
             if (!responseDetalles.ok) {
                 throw new Error(`Error al cargar detalles: ${responseDetalles.status}`);
             }
-
+            
             const dataDetalles = await responseDetalles.json();
             let dataCampanas = { datos: [], total_registros: 0 };
             if (responseCampanas.ok) {
-                dataCampanas = await responseCampanas.json();
+                    dataCampanas = await responseCampanas.json();
             } else {
                 console.warn(`⚠️ Error al cargar campañas: ${responseCampanas.status}`);
             }
@@ -571,7 +994,7 @@ function crearPopupRecurso(marker, recurso) {
             let imagenBase64 = null;
             const ruta = recurso.Ruta || recurso['Ruta'] || recurso.ruta || '';
             const numeroRecurso = recurso.No_ || recurso['No_'] || '';
-
+            
             if (ruta && numeroRecurso) {
                 try {
                     const filepath = ruta + '/' + numeroRecurso + '.jpg';
@@ -595,9 +1018,9 @@ function crearPopupRecurso(marker, recurso) {
                 titulo: '🌍 Ubicación',
                 mostrarMiniatura: false,
             });
-
+            
             let tooltipContent = `
-                <div style="max-width: 400px; max-height: 500px; overflow-y: auto; padding: 5px;">
+                <div class="popup-detail-body" style="padding: 5px;">
                     <h4>🔧 Recurso: ${recurso.Name || 'Sin nombre'}</h4>
                     <p><strong>Nº:</strong> ${recurso.No_}</p>
                     ${recurso['Tipo Recurso'] ? `<p><strong>Tipo de Recurso:</strong> ${recurso['Tipo Recurso']}</p>` : ''}
@@ -682,7 +1105,7 @@ function crearPopupRecurso(marker, recurso) {
             tooltipContent += `</div>`;
             recursoDetallesCargados = true;
             marker.setPopupContent(tooltipContent);
-            if (marker.isPopupOpen()) marker.openPopup();
+            refreshMobileMarkerPopup(marker);
             
         } catch (error) {
             console.error('Error cargando detalles:', error);
@@ -696,6 +1119,7 @@ function crearPopupRecurso(marker, recurso) {
                 </div>
             `;
             marker.setPopupContent(errorTooltip);
+            refreshMobileMarkerPopup(marker);
         } finally {
             recursoDetallesCargando = false;
         }
@@ -1081,6 +1505,98 @@ function formatearFecha(fecha) {
 }
 
 // Configuración inicial del mapa
+function isMobileViewport() {
+    return window.innerWidth <= 768;
+}
+
+function getLeafletPopupOptions(extra = {}) {
+    const mobile = isMobileViewport();
+    return {
+        maxWidth: mobile ? Math.max(280, window.innerWidth - 32) : 420,
+        className: 'gis-leaflet-popup',
+        autoPan: true,
+        autoPanPaddingTopLeft: mobile ? L.point(12, 100) : L.point(40, 80),
+        autoPanPaddingBottomRight: mobile ? L.point(12, 24) : L.point(40, 40),
+        ...extra,
+    };
+}
+
+let gisPopupBackdropEl = null;
+let gisPopupIgnoreCloseUntil = 0;
+
+function mountMobilePopupOnBody(popup) {
+    const el = popup?.getElement();
+    if (!el || el.dataset.gisOnBody === '1') return;
+    el._gisRestoreParent = el.parentNode;
+    document.body.appendChild(el);
+    el.dataset.gisOnBody = '1';
+    el.classList.add('gis-popup-mobile-sheet');
+}
+
+function unmountMobilePopupFromBody(popup) {
+    const el = popup?.getElement();
+    if (!el || el.dataset.gisOnBody !== '1') return;
+    const restoreParent = el._gisRestoreParent || map?.getPane('popupPane');
+    if (restoreParent) restoreParent.appendChild(el);
+    delete el.dataset.gisOnBody;
+    delete el._gisRestoreParent;
+    el.classList.remove('gis-popup-mobile-sheet');
+}
+
+function showMobilePopupBackdrop() {
+    if (gisPopupBackdropEl) return;
+    gisPopupBackdropEl = document.createElement('div');
+    gisPopupBackdropEl.className = 'gis-popup-backdrop';
+    gisPopupBackdropEl.addEventListener('click', () => {
+        if (Date.now() < gisPopupIgnoreCloseUntil) return;
+        map?.closePopup();
+    });
+    document.body.appendChild(gisPopupBackdropEl);
+}
+
+function hideMobilePopupBackdrop() {
+    gisPopupBackdropEl?.remove();
+    gisPopupBackdropEl = null;
+}
+
+function refreshMobileMarkerPopup(marker) {
+    if (!marker || !isMobileViewport()) return;
+    if (!marker.isPopupOpen()) marker.openPopup();
+    gisPopupIgnoreCloseUntil = Date.now() + 450;
+    mountMobilePopupOnBody(marker.getPopup());
+    showMobilePopupBackdrop();
+    document.body.classList.add('gis-popup-sheet-open');
+    map.dragging.disable();
+    map.touchZoom.disable();
+}
+
+function initMobilePopupSheet() {
+    if (!map) return;
+
+    map.on('popupopen', (e) => {
+        if (!isMobileViewport()) return;
+        gisPopupIgnoreCloseUntil = Date.now() + 450;
+        if (e.popup?.options) {
+            e.popup.options.closeOnClick = false;
+        }
+        mountMobilePopupOnBody(e.popup);
+        showMobilePopupBackdrop();
+        document.body.classList.add('gis-popup-sheet-open');
+        map.dragging.disable();
+        map.touchZoom.disable();
+    });
+
+    map.on('popupclose', (e) => {
+        hideMobilePopupBackdrop();
+        document.body.classList.remove('gis-popup-sheet-open');
+        unmountMobilePopupFromBody(e.popup);
+        if (isMobileViewport()) {
+            map.dragging.enable();
+            map.touchZoom.enable();
+        }
+    });
+}
+
 function initMap() {
     console.log('🗺️ Inicializando mapa...');
     
@@ -1094,7 +1610,8 @@ function initMap() {
     }).addTo(map);
     
     initIncidenciasPopupDelegation();
-
+    initMobilePopupSheet();
+    
     console.log('✅ Mapa inicializado correctamente');
 }
 
@@ -1208,10 +1725,10 @@ async function loadRecursosData(data) {
                     }
                 } else {
                     recursosSinCoordenadas++;
-                }
-            } catch (error) {
-                console.error(`Error creando marcador para recurso ${recurso.No_}:`, error);
-                recursosSinCoordenadas++;
+                    }
+                } catch (error) {
+                    console.error(`Error creando marcador para recurso ${recurso.No_}:`, error);
+                    recursosSinCoordenadas++;
             }
         });
         
@@ -1527,34 +2044,49 @@ function normalizarDireccionConocida(direccion) {
     return d;
 }
 
-async function resolverDireccionUbicacion(lat, lon, direccionConocida) {
+async function resolverDireccionUbicacion(lat, lon, direccionConocida, queryFallback) {
     const conocida = normalizarDireccionConocida(direccionConocida);
     if (conocida) return conocida;
 
     const la = parseFloat(lat);
     const lo = parseFloat(lon);
-    if (isNaN(la) || isNaN(lo)) return null;
+    if (isNaN(la) || isNaN(lo)) {
+        return normalizarDireccionConocida(queryFallback);
+    }
 
     const cacheKey = `${la.toFixed(5)},${lo.toFixed(5)}`;
     if (direccionUbicacionCache.has(cacheKey)) {
-        return direccionUbicacionCache.get(cacheKey);
+        const cached = direccionUbicacionCache.get(cacheKey);
+        return cached || normalizarDireccionConocida(queryFallback);
     }
 
     try {
         const response = await fetch(`/api/geocodificar-coordenadas?lat=${la}&lon=${lo}`);
         if (!response.ok) {
-            direccionUbicacionCache.set(cacheKey, null);
-            return null;
+            const fallback = normalizarDireccionConocida(queryFallback);
+            direccionUbicacionCache.set(cacheKey, fallback);
+            return fallback;
         }
         const data = await response.json();
-        const direccion = normalizarDireccionConocida(data.direccion);
+        const direccion = normalizarDireccionConocida(data.direccion)
+            || normalizarDireccionConocida(queryFallback);
         direccionUbicacionCache.set(cacheKey, direccion);
         return direccion;
     } catch (error) {
         console.warn('No se pudo resolver dirección por coordenadas:', error);
-        direccionUbicacionCache.set(cacheKey, null);
-        return null;
+        const fallback = normalizarDireccionConocida(queryFallback);
+        direccionUbicacionCache.set(cacheKey, fallback);
+        return fallback;
     }
+}
+
+function buildConsultaParadaBus(mobiliario) {
+    const num = mobiliario['Nº Emplazamiento'] || '';
+    const desc = (mobiliario.Descripción || '').trim();
+    const partes = [`Parada Bus ${num}`];
+    if (desc) partes.push(desc);
+    partes.push('Palma de Mallorca');
+    return partes.join(' - ');
 }
 
 function buildEnlacesMapaHtml(lat, lon, direccion) {
@@ -1592,12 +2124,12 @@ function buildUbicacionStreetViewHtml(options) {
 
     const latStr = la.toFixed(6);
     const lonStr = lo.toFixed(6);
-    const svLocation = direccion ? encodeURIComponent(direccion) : `${latStr},${lonStr}`;
+    const svLocation = `${latStr},${lonStr}`;
     const w = width || 320;
     const h = height || 150;
 
     const miniaturaHtml = mostrarMiniatura ? `
-            <div style="position:relative;width:${w}px;height:${h}px;border:1px solid #ccc;border-radius:5px;overflow:hidden;background:#f0f0f0;margin:0 auto;">
+            <div class="popup-streetview-wrap" style="position:relative;width:${w}px;max-width:100%;height:${h}px;border:1px solid #ccc;border-radius:5px;overflow:hidden;background:#f0f0f0;margin:0 auto;">
                 <img decoding="async"
                     src="https://maps.googleapis.com/maps/api/streetview?size=${w}x${h}&location=${svLocation}&heading=0&pitch=0&fov=90&key=${GOOGLE_MAPS_API_KEY}"
                     style="width:100%;height:100%;object-fit:cover;"
@@ -1628,17 +2160,33 @@ async function buildUbicacionStreetViewHtmlAsync(options) {
     const lo = parseFloat(options.lon);
     if (isNaN(la) || isNaN(lo) || (la === 0 && lo === 0)) return '';
 
-    const direccion = await resolverDireccionUbicacion(la, lo, options.direccionConocida);
+    const direccion = await resolverDireccionUbicacion(
+        la, lo, options.direccionConocida, options.queryFallback
+    );
     return buildUbicacionStreetViewHtml({ ...options, lat: la, lon: lo, direccion });
 }
 
 function buildMobiliarioUbicacionHtml(mobiliario, width, height) {
     const num = mobiliario['Nº Emplazamiento'];
-    const direccion = normalizarDireccionConocida(mobiliario.Dirección);
     return buildUbicacionStreetViewHtml({
         lat: mobiliario.PuntoY,
         lon: mobiliario.PuntoX,
-        direccion,
+        direccion: null,
+        titulo: '🌍 Ubicación',
+        etiquetaOverlay: `🚌 ${num}`,
+        subtituloOverlay: mobiliario.Descripción || 'Parada',
+        width,
+        height,
+    });
+}
+
+async function buildMobiliarioUbicacionHtmlAsync(mobiliario, width, height) {
+    const num = mobiliario['Nº Emplazamiento'];
+    return buildUbicacionStreetViewHtmlAsync({
+        lat: mobiliario.PuntoY,
+        lon: mobiliario.PuntoX,
+        direccionConocida: '',
+        queryFallback: buildConsultaParadaBus(mobiliario),
         titulo: '🌍 Ubicación',
         etiquetaOverlay: `🚌 ${num}`,
         subtituloOverlay: mobiliario.Descripción || 'Parada',
@@ -1732,17 +2280,17 @@ function buildMobiliarioCamposHtml(mobiliario) {
 function buildMobiliarioPopupSimple(mobiliario, distanciaKm) {
     const distTxt = distanciaKm != null ? `<p><strong>Distancia:</strong> ${Number(distanciaKm).toFixed(2)} km</p>` : '';
     return `
-        <div style="max-width:350px;padding:5px;">
+        <div class="popup-simple-body" style="padding:5px;">
             <h4>🪑 ${mobiliario.Descripción || 'Sin descripción'}</h4>
             <p><strong>Nº:</strong> ${mobiliario['Nº Emplazamiento']}</p>
             <p><strong>Estado:</strong> ${getMobiliarioEstadoTexto(mobiliario)}</p>
             <p><strong>Incidencias:</strong> ${mobiliario.total_incidencias || 0}</p>
             ${distTxt}
             ${buildMobiliarioCamposHtml(mobiliario)}
-            ${buildMobiliarioUbicacionHtml(mobiliario, 320, 150)}
+            <div id="mob-ubicacion-${mobiliario['Nº Emplazamiento']}">${buildMobiliarioUbicacionHtml(mobiliario, 320, 150)}</div>
             <p style="text-align:center;margin-top:5px;font-size:12px;color:#666;">
-                <em>Haz clic para ver detalles completos</em>
-            </p>
+                        <em>Haz clic para ver detalles completos</em>
+                    </p>
             ${getIncidenciasBotonesHtml(String(mobiliario['Nº Emplazamiento'] || ''), '')}
         </div>`;
 }
@@ -1750,7 +2298,7 @@ function buildMobiliarioPopupSimple(mobiliario, distanciaKm) {
 function buildMobiliarioIncidenciasHtml(data) {
     const incidencias = data.incidencias || [];
     if (incidencias.length > 0) {
-        let html = `<h5>🚨 Incidencias (${incidencias.length}):</h5><div style="max-height:200px;overflow-y:auto;">`;
+        let html = `<h5>🚨 Incidencias (${incidencias.length}):</h5><div class="popup-incidencias-list">`;
         incidencias.forEach((incidencia) => {
             const fecha = incidencia.Fecha ? formatearFecha(incidencia.Fecha) : 'Sin fecha';
             const motivo = incidencia.Motivo || 'Sin motivo';
@@ -1774,60 +2322,53 @@ function buildMobiliarioIncidenciasHtml(data) {
 }
 
 async function cargarMobiliarioPopupDetalle(marker, mobiliario) {
-    const loadingTooltip = `
+                const loadingTooltip = `
         <div style="max-width:300px;padding:10px;text-align:center;">
-            <h4>🪑 ${mobiliario.Descripción || 'Sin descripción'}</h4>
-            <p>Cargando incidencias...</p>
+                        <h4>🪑 ${mobiliario.Descripción || 'Sin descripción'}</h4>
+                        <p>Cargando incidencias...</p>
             <div style="border:2px solid #f3f3f3;border-top:2px solid #3498db;border-radius:50%;width:20px;height:20px;animation:spin 1s linear infinite;margin:10px auto;"></div>
         </div>`;
-    marker.setPopupContent(loadingTooltip);
-
-    try {
+                marker.setPopupContent(loadingTooltip);
+                refreshMobileMarkerPopup(marker);
+                
+                try {
         const response = await fetch(`/api/mobiliario/${mobiliario['Nº Emplazamiento']}/incidencias`);
         if (!response.ok) {
             throw new Error(`Error al obtener incidencias: ${response.status}`);
         }
-        const data = await response.json();
+                    const data = await response.json();
         if (!data.success) {
             throw new Error(data.error || 'Error al obtener incidencias');
         }
-
-        const ubicacionHtml = await buildUbicacionStreetViewHtmlAsync({
-            lat: mobiliario.PuntoY,
-            lon: mobiliario.PuntoX,
-            direccionConocida: mobiliario.Dirección,
-            titulo: '🌍 Ubicación',
-            etiquetaOverlay: `🚌 ${mobiliario['Nº Emplazamiento']}`,
-            subtituloOverlay: mobiliario.Descripción || 'Parada',
-            width: 350,
-            height: 200,
-        });
-
-        let tooltipContent = `
-            <div style="max-width:460px;max-height:520px;overflow-y:auto;overflow-x:hidden;padding:5px;">
-                <h4>🪑 Mobiliario: ${mobiliario.Descripción || 'Sin descripción'}</h4>
-                <p><strong>Nº Emplazamiento:</strong> ${mobiliario['Nº Emplazamiento']}</p>
-                <p><strong>Tipo:</strong> ${mobiliario.Tipo || 'N/A'}</p>
+                    
+        const ubicacionHtml = await buildMobiliarioUbicacionHtmlAsync(mobiliario, 350, 200);
+                    
+                    let tooltipContent = `
+            <div class="popup-detail-body" style="padding:5px;">
+                            <h4>🪑 Mobiliario: ${mobiliario.Descripción || 'Sin descripción'}</h4>
+                            <p><strong>Nº Emplazamiento:</strong> ${mobiliario['Nº Emplazamiento']}</p>
+                            <p><strong>Tipo:</strong> ${mobiliario.Tipo || 'N/A'}</p>
                 ${buildMobiliarioCamposHtml(mobiliario)}
-                ${mobiliario.geocodificado ? '<p><strong>📍 Ubicación:</strong> <em>Geocodificada desde dirección de Mallorca</em></p>' : ''}
+                            ${mobiliario.geocodificado ? '<p><strong>📍 Ubicación:</strong> <em>Geocodificada desde dirección de Mallorca</em></p>' : ''}
                 <hr style="margin:8px 0;border-color:#ddd;">
                 <p><strong>Estado:</strong> ${getMobiliarioEstadoTexto(mobiliario)}</p>
                 <p><strong>Total incidencias:</strong> ${data.total_incidencias || 0}</p>
                 ${ubicacionHtml}`;
 
-        if (mobiliario.Operario) {
-            tooltipContent += `<p><strong>Operario:</strong> ${mobiliario.Operario}</p>`;
-        }
-        if (mobiliario['Zona Limpieza']) {
-            tooltipContent += `<p><strong>Zona Limpieza:</strong> ${mobiliario['Zona Limpieza']}</p>`;
-        }
-
+                    if (mobiliario.Operario) {
+                        tooltipContent += `<p><strong>Operario:</strong> ${mobiliario.Operario}</p>`;
+                    }
+                    if (mobiliario['Zona Limpieza']) {
+                        tooltipContent += `<p><strong>Zona Limpieza:</strong> ${mobiliario['Zona Limpieza']}</p>`;
+                    }
+                    
         tooltipContent += buildMobiliarioIncidenciasHtml(data);
         tooltipContent += getIncidenciasBotonesHtml(String(mobiliario['Nº Emplazamiento'] || ''), '');
         tooltipContent += '</div>';
 
         marker.setPopupContent(tooltipContent);
         setupPopupIncidenciaButtons(marker);
+        refreshMobileMarkerPopup(marker);
         return true;
     } catch (error) {
         console.error('Error cargando incidencias de mobiliario:', error);
@@ -1841,6 +2382,7 @@ async function cargarMobiliarioPopupDetalle(marker, mobiliario) {
                 ${getIncidenciasBotonesHtml(String(mobiliario['Nº Emplazamiento'] || ''), '')}
             </div>`);
         setupPopupIncidenciaButtons(marker);
+        refreshMobileMarkerPopup(marker);
         return false;
     }
 }
@@ -1862,8 +2404,26 @@ function crearMarcadorMobiliario(mobiliario, distanciaKm) {
 
     const marker = L.marker([mobiliario.PuntoY, mobiliario.PuntoX], { icon: busIcon });
     marker.mobiliarioData = mobiliario;
-    marker.bindPopup(buildMobiliarioPopupSimple(mobiliario, distanciaKm), { maxWidth: 420 });
+    marker.bindPopup(buildMobiliarioPopupSimple(mobiliario, distanciaKm), getLeafletPopupOptions({ maxWidth: 420 }));
     setupPopupIncidenciaButtons(marker);
+
+    let ubicacionSimpleActualizada = false;
+    marker.on('popupopen', async function() {
+        if (ubicacionSimpleActualizada) return;
+        const num = mobiliario['Nº Emplazamiento'];
+        const popupEl = marker.getPopup()?.getElement();
+        const cont = popupEl?.querySelector(`#mob-ubicacion-${num}`);
+        if (!cont) return;
+        try {
+            const html = await buildMobiliarioUbicacionHtmlAsync(mobiliario, 320, 150);
+            if (html) {
+                cont.outerHTML = html;
+                ubicacionSimpleActualizada = true;
+            }
+                } catch (error) {
+            console.warn('No se pudo actualizar ubicación del mobiliario:', error);
+        }
+    });
 
     let detallesCargados = false;
     marker.on('click', async function() {
@@ -2216,7 +2776,49 @@ async function checkHealth() {
 }
 
 // Event listeners
-document.addEventListener('DOMContentLoaded', function() {
+document.addEventListener('DOMContentLoaded', async function() {
+    await verificarAutenticacion();
+
+    const btnLogin = document.getElementById('btnLogin');
+    if (btnLogin) btnLogin.addEventListener('click', hacerLogin);
+    const loginPassword = document.getElementById('loginPassword');
+    if (loginPassword) {
+        loginPassword.addEventListener('keydown', function(e) {
+            if (e.key === 'Enter') hacerLogin();
+        });
+    }
+
+    const btnResend2fa = document.getElementById('btnResend2fa');
+    const btnCancel2fa = document.getElementById('btnCancel2fa');
+    if (btnResend2fa) btnResend2fa.addEventListener('click', reenviarWhatsapp2fa);
+    if (btnCancel2fa) btnCancel2fa.addEventListener('click', cancelar2fa);
+
+    const btnMenuMobile = document.getElementById('btnMenuMobile');
+    const btnCerrarMenu = document.getElementById('btnCerrarMenu');
+    const sidebarOverlay = document.getElementById('sidebarOverlay');
+
+    function openMenuMobile() {
+        document.body.classList.add('menu-mobile-open');
+        if (sidebarOverlay) sidebarOverlay.setAttribute('aria-hidden', 'false');
+    }
+    function closeMenuMobile() {
+        document.body.classList.remove('menu-mobile-open');
+        if (sidebarOverlay) sidebarOverlay.setAttribute('aria-hidden', 'true');
+    }
+
+    if (btnMenuMobile) btnMenuMobile.addEventListener('click', openMenuMobile);
+    if (btnCerrarMenu) btnCerrarMenu.addEventListener('click', closeMenuMobile);
+    if (sidebarOverlay) sidebarOverlay.addEventListener('click', closeMenuMobile);
+
+    window.addEventListener('resize', function() {
+        if (!isMobileViewport()) {
+            document.body.classList.remove('gis-popup-sheet-open');
+            document.querySelectorAll('.gis-popup-mobile-sheet').forEach((el) => {
+                el.classList.remove('gis-popup-mobile-sheet');
+            });
+        }
+    });
+
     // Establecer fechas por defecto a hoy
     const fechaDesde = document.getElementById('fechaDesde');
     const fechaHasta = document.getElementById('fechaHasta');
@@ -2621,17 +3223,17 @@ async function executeAddressSearch(originalAddress, radius, lat, lon, formatted
     }
     url = addFechasToUrl(url);
 
-    const response = await fetch(url);
-    const data = await response.json();
-
-    if (data.error) {
-        throw new Error(data.error);
-    }
-
-    displaySearchResults(data, 'address', {
-        lat: data.coordenadas_encontradas.lat,
-        lon: data.coordenadas_encontradas.lon,
-        radius,
+        const response = await fetch(url);
+        const data = await response.json();
+        
+        if (data.error) {
+            throw new Error(data.error);
+        }
+        
+        displaySearchResults(data, 'address', { 
+            lat: data.coordenadas_encontradas.lat, 
+            lon: data.coordenadas_encontradas.lon, 
+            radius,
         address: data.direccion_formateada || formattedAddress || data.direccion_buscada
     });
 }
@@ -2663,10 +3265,10 @@ function showAddressPickerModal(resultados, originalAddress, radius, onSelect) {
             closeAddressPickerModal();
             try {
                 await selectHandler(originalAddress, radius, item.lat, item.lon, item.direccion);
-            } catch (error) {
+    } catch (error) {
                 console.error('❌ Error tras elegir dirección:', error);
-                showNotification(`Error: ${error.message}`, 'error');
-            }
+        showNotification(`Error: ${error.message}`, 'error');
+    }
         });
         list.appendChild(btn);
     });
