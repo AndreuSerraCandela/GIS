@@ -1116,6 +1116,7 @@ def _after_identity_resolved(
         'whatsapp_sent': info['whatsapp_sent'],
         'expires_in': info['expires_in'],
         'whatsapp_confirm_url': info.get('whatsapp_confirm_url'),
+        'whatsapp_confirm_qr': info.get('whatsapp_confirm_qr'),
         'is_mobile_client': trusted_device.is_mobile_request(request),
         'auth_method': auth_method,
     }
@@ -1276,6 +1277,7 @@ def auth_status():
                 'whatsapp_error': status.get('whatsapp_error'),
                 'expires_in': status.get('expires_in'),
                 'whatsapp_confirm_url': status.get('whatsapp_confirm_url'),
+                'whatsapp_confirm_qr': status.get('whatsapp_confirm_qr'),
                 'is_mobile_client': trusted_device.is_mobile_request(request),
             })
 

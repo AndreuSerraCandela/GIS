@@ -81,6 +81,13 @@ async function updateWhatsappConfirmQr(info) {
         }
     };
 
+    const dataUrl = info && info.whatsapp_confirm_qr;
+    if (dataUrl && dataUrl.startsWith('data:image/')) {
+        img.src = dataUrl;
+        img.onerror = showQrError;
+        return;
+    }
+
     if (typeof QRCode !== 'undefined' && typeof QRCode.toDataURL === 'function') {
         try {
             img.src = await QRCode.toDataURL(url, {
@@ -274,6 +281,7 @@ async function manejarRespuestaAutenticacion(data, options = {}) {
             whatsapp_error: data.whatsapp_error,
             challenge_id: data.challenge_id,
             whatsapp_confirm_url: data.whatsapp_confirm_url,
+            whatsapp_confirm_qr: data.whatsapp_confirm_qr,
             is_mobile_client: data.is_mobile_client,
         });
         iniciarPolling2fa();

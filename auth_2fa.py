@@ -170,6 +170,60 @@ def build_whatsapp_confirm_url(code: str) -> str | None:
 
 
 
+def build_whatsapp_qr_data_url(code: str) -> str | None:
+
+    """PNG QR embebido (data URL) para el enlace wa.me de confirmación 2FA."""
+
+    url = build_whatsapp_confirm_url(code)
+
+    if not url:
+
+        return None
+
+    try:
+
+        import base64
+
+        from io import BytesIO
+
+        import qrcode
+
+        qr = qrcode.QRCode(
+
+            version=1,
+
+            error_correction=qrcode.constants.ERROR_CORRECT_M,
+
+            box_size=8,
+
+            border=2,
+
+        )
+
+        qr.add_data(url)
+
+        qr.make(fit=True)
+
+        img = qr.make_image(fill_color="black", back_color="white")
+
+        buf = BytesIO()
+
+        img.save(buf, format="PNG")
+
+        encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+
+        return f"data:image/png;base64,{encoded}"
+
+    except Exception as exc:
+
+        print(f"[2FA] Error generando QR (instale qrcode[pil]): {exc}")
+
+        return None
+
+
+
+
+
 def normalize_phone(phone: str) -> str:
 
     digits = "".join(c for c in str(phone or "") if c.isdigit())
@@ -680,6 +734,8 @@ def create_pending_2fa(
 
         "whatsapp_confirm_url": build_whatsapp_confirm_url(code),
 
+        "whatsapp_confirm_qr": build_whatsapp_qr_data_url(code),
+
     }
 
     return client_info, whatsapp_error
@@ -951,6 +1007,8 @@ def get_2fa_status(challenge_id: str) -> dict[str, Any]:
 
         "whatsapp_confirm_url": build_whatsapp_confirm_url(str(ch.get("code") or "")),
 
+        "whatsapp_confirm_qr": build_whatsapp_qr_data_url(str(ch.get("code") or "")),
+
     }
 
 
@@ -1010,6 +1068,8 @@ def resend_whatsapp(challenge_id: str) -> dict[str, Any]:
         "whatsapp_sent": True,
 
         "whatsapp_confirm_url": build_whatsapp_confirm_url(code),
+
+        "whatsapp_confirm_qr": build_whatsapp_qr_data_url(code),
 
     }
 

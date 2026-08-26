@@ -441,7 +441,7 @@
         window.INCIDENCIAS_URL = JSON.parse(document.getElementById("incidencias-url-json").textContent);
     </script>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+    <script src="{{ url_for('static', filename='js/vendor/qrcode.min.js') }}"></script>
     <script src="{{ url_for('static', filename='js/app.js') }}"></script>
 </body>
 </html>
