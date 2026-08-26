@@ -51,20 +51,53 @@ function updateWhatsappConfirmButton(info) {
     }
 }
 
-function updateWhatsappConfirmQr(info) {
+async function updateWhatsappConfirmQr(info) {
     const wrap = document.getElementById('twoFactorQrWrap');
     const img = document.getElementById('twoFactorQrImg');
+    const hint = document.getElementById('twoFactorQrHint');
     if (!wrap || !img) return;
+
     const url = info && info.whatsapp_confirm_url;
     const showOnDesktop = url && !isMobileClient();
-    if (showOnDesktop) {
-        const challengeId = (info && info.challenge_id) || twoFactorChallengeId || '';
-        img.src = `/api/auth/2fa/qr?t=${encodeURIComponent(challengeId || String(Date.now()))}`;
-        wrap.style.display = 'block';
-    } else {
+    if (!showOnDesktop) {
         img.removeAttribute('src');
+        img.style.display = '';
+        img.onerror = null;
         wrap.style.display = 'none';
+        return;
     }
+
+    wrap.style.display = 'block';
+    img.style.display = '';
+    if (hint) {
+        hint.textContent = 'Escanea con el móvil para abrir WhatsApp con el código listo y envíalo:';
+        hint.style.display = '';
+    }
+
+    const showQrError = () => {
+        img.style.display = 'none';
+        if (hint) {
+            hint.textContent = 'No se pudo generar el QR. Responde al WhatsApp con el código de arriba.';
+        }
+    };
+
+    if (typeof QRCode !== 'undefined' && typeof QRCode.toDataURL === 'function') {
+        try {
+            img.src = await QRCode.toDataURL(url, {
+                errorCorrectionLevel: 'M',
+                width: 200,
+                margin: 2,
+            });
+            img.onerror = null;
+            return;
+        } catch (error) {
+            console.warn('Error generando QR en el navegador:', error);
+        }
+    }
+
+    const challengeId = (info && info.challenge_id) || twoFactorChallengeId || '';
+    img.onerror = showQrError;
+    img.src = `/api/auth/2fa/qr?t=${encodeURIComponent(challengeId || String(Date.now()))}`;
 }
 
 function updateWhatsapp2faUi(info) {
