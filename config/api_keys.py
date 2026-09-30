@@ -2,9 +2,12 @@
 Configuración de API Keys para servicios de geocodificación
 """
 
+import os
+
 # Google Maps API Key
 # Obtener en: https://console.cloud.google.com/apis/credentials
-GOOGLE_MAPS_API_KEY = "AIzaSyDw_VuMVhBi6Yj0fWVZTpf32DxjpnjbCno"
+_DEFAULT_GOOGLE_KEY = "AIzaSyDw_VuMVhBi6Yj0fWVZTpf32DxjpnjbCno"
+GOOGLE_MAPS_API_KEY = (os.getenv("GOOGLE_MAPS_API_KEY") or _DEFAULT_GOOGLE_KEY).strip()
 
 # Bing Maps API Key  
 # Obtener en: https://www.bingmapsportal.com/

@@ -14,6 +14,7 @@ import json
 import requests
 import os
 import math
+import time
 from datetime import datetime, date
 from config.config import Config
 from config.database import get_db_connection
@@ -229,46 +230,74 @@ def buscar_lugares_cerca(lat, lon, tipo_lugar, radio_km=5):
         radio_metros = int(radio_km * 1000)
         
         url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
-        params = {
-            'location': f"{lat},{lon}",
-            'radius': radio_metros,
-            'type': tipo_lugar,
-            'key': api_key,
-        }
-        
-        response = requests.get(url, params=params, timeout=10)
-        
-        if response.status_code == 200:
+        lugares = []
+        next_page_token = None
+        pages = 0
+        max_pages = 3
+
+        while pages < max_pages:
+            params = {
+                'location': f"{lat},{lon}",
+                'radius': radio_metros,
+                'type': tipo_lugar,
+                'key': api_key,
+            }
+            if next_page_token:
+                params = {'pagetoken': next_page_token, 'key': api_key}
+
+            response = requests.get(url, params=params, timeout=15)
+            pages += 1
+
+            if response.status_code != 200:
+                print(f"Error HTTP en Google Places API: {response.status_code}")
+                return lugares, f"Google Places API HTTP {response.status_code}" if not lugares else None
+
             data = response.json()
             status = data.get('status', 'UNKNOWN')
+            if status == 'INVALID_REQUEST' and next_page_token and pages > 1:
+                time.sleep(2)
+                response = requests.get(url, params=params, timeout=15)
+                if response.status_code != 200:
+                    break
+                data = response.json()
+                status = data.get('status', 'UNKNOWN')
+
             if status in ('OK', 'ZERO_RESULTS'):
-                lugares = []
                 for place in data.get('results') or []:
-                    lugar = {
+                    geom = place.get('geometry') or {}
+                    loc = geom.get('location') or {}
+                    plat = loc.get('lat')
+                    plon = loc.get('lng')
+                    if plat is None or plon is None:
+                        continue
+                    lugares.append({
                         'nombre': place.get('name', 'Sin nombre'),
-                        'lat': place['geometry']['location']['lat'],
-                        'lon': place['geometry']['location']['lng'],
+                        'lat': plat,
+                        'lon': plon,
                         'rating': place.get('rating', 0),
                         'vicinity': place.get('vicinity', ''),
                         'place_id': place.get('place_id', ''),
                         'tipo': tipo_lugar,
-                        'distancia_km': calcular_distancia_haversine(
-                            lat, lon, 
-                            place['geometry']['location']['lat'], 
-                            place['geometry']['location']['lng']
-                        )
-                    }
-                    lugares.append(lugar)
-                
-                # Ordenar por distancia
-                lugares.sort(key=lambda x: x['distancia_km'])
-                return lugares, None
+                        'distancia_km': calcular_distancia_haversine(lat, lon, plat, plon),
+                    })
+                next_page_token = data.get('next_page_token')
+                if not next_page_token:
+                    break
+                time.sleep(2)
+                continue
+
             err_msg = data.get('error_message') or status
             print(f"Error en Google Places API: {status} - {err_msg}")
-            return [], f"Google Places API: {err_msg}"
-        print(f"Error HTTP en Google Places API: {response.status_code}")
-        return [], f"Google Places API HTTP {response.status_code}"
-            
+            if lugares:
+                break
+            hint = ''
+            if status in ('REQUEST_DENIED', 'OVER_QUERY_LIMIT'):
+                hint = ' Comprueba facturación, Places API y restricciones de la clave en Google Cloud.'
+            return [], f"Google Places API ({status}): {err_msg}.{hint}"
+
+        lugares.sort(key=lambda x: x['distancia_km'])
+        return lugares, None
+
     except Exception as e:
         print(f"Error al buscar lugares cerca: {e}")
         return [], str(e)
@@ -1457,6 +1486,15 @@ def api_whatsapp_ultima_respuesta():
     })
 
 
+def _static_asset_version():
+    """Versión para cache-bust de JS/CSS (mtime del bundle principal)."""
+    try:
+        static_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'js', 'app.js')
+        return str(int(os.path.getmtime(static_root)))
+    except OSError:
+        return '0'
+
+
 @app.route('/')
 def index():
     """Página principal de la aplicación GIS"""
@@ -1465,6 +1503,7 @@ def index():
         incidencias_url=INCIDENCIAS_URL,
         sso_enabled=sso_auth.is_sso_enabled(),
         sso_launch_url=sso_auth.sso_launch_url(),
+        asset_version=_static_asset_version(),
     )
 
 @app.route('/api/geodata')
@@ -2539,9 +2578,14 @@ def get_tipos_lugares():
     """API endpoint para obtener todos los tipos de lugares soportados"""
     try:
         tipos_soportados = obtener_tipos_lugares_soportados()
+        api_key = (GEOCODING_SERVICES.get('google_maps') or {}).get('api_key') or ''
+        google_places_ready = bool(
+            api_key and not api_key.startswith('YOUR_') and GEOCODING_SERVICES.get('google_maps', {}).get('enabled')
+        )
         return jsonify({
             "total_tipos": len(tipos_soportados),
-            "tipos_lugares": tipos_soportados
+            "tipos_lugares": tipos_soportados,
+            "google_places_ready": google_places_ready,
         })
     except Exception as e:
         print(f"Error en endpoint /api/tipos-lugares: {e}")

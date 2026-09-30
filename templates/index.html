@@ -114,7 +114,9 @@
                         </div>
                         <button id="searchByPlace" class="btn btn-warning">Buscar Recursos Cerca</button>
                         <button id="searchMobiliarioByPlace" class="btn btn-info">Buscar Mobiliario Cerca</button>
+                        <button type="button" id="pickPlaceSearchPoint" class="btn btn-secondary btn-sm">📍 Elegir punto en el mapa</button>
                         <button id="useSavedLocationPlace" class="btn btn-info" title="No hay ubicación guardada. Usa 'Obtener Ubicación Actual' primero.">📍¿Donde Buscar?</button>
+                        <small class="form-text text-muted">Por defecto se busca en el <strong>centro del mapa</strong> visible.</small>
                         <button id="cancelSearch" class="btn btn-secondary" style="display: none;">Cancelar Búsqueda</button>
                     </div>
                     
@@ -442,6 +444,6 @@
     </script>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="{{ url_for('static', filename='js/vendor/qrcode.min.js') }}"></script>
-    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}?v={{ asset_version }}"></script>
 </body>
 </html>

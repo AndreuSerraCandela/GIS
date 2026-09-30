@@ -63,15 +63,34 @@ async function fetchGisJson(url, options = {}) {
     return data;
 }
 
+function detachMapClickListeners() {
+    if (!map) return;
+    if (currentClickHandler) {
+        map.off('click', currentClickHandler);
+        currentClickHandler = null;
+    }
+    if (map._zoneDblClickHandler) {
+        map.off('dblclick', map._zoneDblClickHandler);
+        map._zoneDblClickHandler = null;
+    }
+    if (map._mapClickTestHandler) {
+        map.off('click', map._mapClickTestHandler);
+        map._mapClickTestHandler = null;
+    }
+}
+
+function getMapSearchCenter() {
+    if (!map) return null;
+    const c = map.getCenter();
+    return { lat: c.lat, lon: c.lng };
+}
+
 function beginMapClickSearch(message, onPick) {
     if (!map) {
         showNotification('El mapa aún no está listo. Espera un momento e inténtalo de nuevo.', 'error');
         return;
     }
-    if (currentClickHandler) {
-        map.off('click', currentClickHandler);
-        currentClickHandler = null;
-    }
+    detachMapClickListeners();
     showNotification(message, 'info');
     map.getContainer().style.cursor = 'crosshair';
     const cancelBtn = document.getElementById('cancelSearch');
@@ -275,6 +294,7 @@ function finalizarAutenticacion(userData) {
 }
 
 function cargarCatalogosFiltros() {
+    loadPlaceTypes();
     if (!isAuthenticated) {
         return;
     }
@@ -3155,6 +3175,10 @@ document.addEventListener('DOMContentLoaded', async function() {
     document.getElementById('searchByAddress').addEventListener('click', searchByAddress);
     document.getElementById('searchByStop').addEventListener('click', searchByStop);
     document.getElementById('searchMobiliarioByPlace').addEventListener('click', searchMobiliarioByPlace);
+    const pickPlaceBtn = document.getElementById('pickPlaceSearchPoint');
+    if (pickPlaceBtn) {
+        pickPlaceBtn.addEventListener('click', () => pickPlaceSearchPoint('recursos'));
+    }
     document.getElementById('searchMobiliarioByCoordinates').addEventListener('click', searchMobiliarioByCoordinates);
     document.getElementById('searchMobiliarioByAddress').addEventListener('click', searchMobiliarioByAddress);
     document.getElementById('searchByZone').addEventListener('click', searchByZone);
@@ -3188,7 +3212,7 @@ document.addEventListener('DOMContentLoaded', async function() {
 });
 
 // Funciones de utilidad
-function showNotification(message, type = 'info') {
+function showNotification(message, type = 'info', durationMs) {
     console.log('🔔 Mostrando notificación...');
     console.log('📍 Mensaje:', message);
     console.log('📍 Tipo:', type);
@@ -3203,12 +3227,14 @@ function showNotification(message, type = 'info') {
     statusDiv.className = `status ${type}`;
     console.log('✅ Notificación mostrada');
     
-    // Auto-ocultar después de 5 segundos
+    const hideAfter = durationMs ?? (type === 'error' ? 20000 : 8000);
     setTimeout(() => {
-        statusDiv.textContent = '';
-        statusDiv.className = 'status';
+        if (statusDiv.textContent === message) {
+            statusDiv.textContent = '';
+            statusDiv.className = 'status';
+        }
         console.log('✅ Notificación ocultada');
-    }, 5000);
+    }, hideAfter);
     
     console.log('✅ Notificación mostrada correctamente');
 }
@@ -3254,10 +3280,25 @@ async function loadPlaceTypes() {
         
         console.log('✅ Tipos de lugares cargados correctamente');
         console.log('Tipos de lugares cargados:', data.total_tipos);
+
+        if (data.google_places_ready === false) {
+            showNotification(
+                'Google Places no está configurado en el servidor: las búsquedas por tipo de lugar no devolverán comercios.',
+                'warning',
+                15000
+            );
+        }
     } catch (error) {
         console.error('❌ Error cargando tipos de lugares:', error);
         showNotification('Error cargando tipos de lugares', 'error');
     }
+}
+
+function getSelectedPlaceTypeLabel() {
+    const select = document.getElementById('placeType');
+    if (!select || !select.value) return '';
+    const opt = select.selectedOptions[0];
+    return (opt && opt.textContent) ? opt.textContent.trim() : select.value;
 }
 
 // Cambiar tipo de búsqueda
@@ -3311,19 +3352,50 @@ async function searchByPlace() {
     
     console.log('✅ Validaciones pasadas, iniciando búsqueda...');
 
+    const center = getMapSearchCenter();
+    if (!center) {
+        showNotification('El mapa no está listo', 'error');
+        return;
+    }
+
+    try {
+        const label = getSelectedPlaceTypeLabel() || placeType;
+        showNotification(`Buscando ${label} en el centro del mapa (radio ${radius} km)...`, 'info');
+        await performPlaceSearch(center.lat, center.lon);
+    } catch (error) {
+        console.error('❌ Error en búsqueda por lugar:', error);
+        showNotification(`Error: ${error.message}`, 'error');
+    }
+}
+
+async function pickPlaceSearchPoint(mode = 'recursos') {
+    const placeType = document.getElementById('placeType').value;
+    const radius = parseFloat(document.getElementById('placeRadius').value);
+
+    if (!placeType) {
+        showNotification('Por favor selecciona un tipo de lugar', 'error');
+        return;
+    }
+    if (!radius || radius <= 0 || radius > 50) {
+        showNotification('Por favor introduce un radio válido entre 0.1 y 50 km', 'error');
+        return;
+    }
+
     beginMapClickSearch(
-        '🎯 Haz clic en el mapa: centro donde buscar lugares y recursos cercanos',
+        '🎯 Haz clic en el mapa: centro de la búsqueda',
         async (lat, lon) => {
             try {
-                await performPlaceSearch(lat, lon);
+                if (mode === 'mobiliario') {
+                    await performMobiliarioPlaceSearch(lat, lon);
+                } else {
+                    await performPlaceSearch(lat, lon);
+                }
             } catch (error) {
-                console.error('❌ Error en búsqueda por lugar:', error);
+                console.error('Error en búsqueda por lugar (clic):', error);
                 showNotification(`Error: ${error.message}`, 'error');
             }
         }
     );
-
-    console.log('✅ Búsqueda por lugar configurada correctamente');
 }
 
 // Buscar recursos cerca de coordenadas específicas
@@ -3418,12 +3490,7 @@ async function executeAddressSearch(originalAddress, radius, lat, lon, formatted
     }
     url = addFechasToUrl(url);
 
-        const response = await fetch(url);
-        const data = await response.json();
-        
-        if (data.error) {
-            throw new Error(data.error);
-        }
+        const data = await fetchGisJson(url);
         
         displaySearchResults(data, 'address', { 
             lat: data.coordenadas_encontradas.lat, 
@@ -3508,17 +3575,20 @@ async function searchMobiliarioByPlace() {
         return;
     }
 
-    beginMapClickSearch(
-        '🎯 Haz clic en el mapa: centro donde buscar lugares y mobiliario cercano',
-        async (lat, lon) => {
-            try {
-                await performMobiliarioPlaceSearch(lat, lon);
-            } catch (error) {
-                console.error('Error en búsqueda de mobiliario por lugar:', error);
-                showNotification(`Error: ${error.message}`, 'error');
-            }
-        }
-    );
+    const center = getMapSearchCenter();
+    if (!center) {
+        showNotification('El mapa no está listo', 'error');
+        return;
+    }
+
+    try {
+        const label = getSelectedPlaceTypeLabel() || placeType;
+        showNotification(`Buscando ${label} y mobiliario en el centro del mapa...`, 'info');
+        await performMobiliarioPlaceSearch(center.lat, center.lon);
+    } catch (error) {
+        console.error('Error en búsqueda de mobiliario por lugar:', error);
+        showNotification(`Error: ${error.message}`, 'error');
+    }
 }
 
 async function performMobiliarioPlaceSearch(lat, lon) {
@@ -3530,7 +3600,8 @@ async function performMobiliarioPlaceSearch(lat, lon) {
         return;
     }
 
-    showNotification(`Buscando ${placeType} y mobiliario en un radio de ${radius} km...`, 'info');
+    const label = getSelectedPlaceTypeLabel() || placeType;
+    showNotification(`Buscando ${label} y mobiliario en un radio de ${radius} km...`, 'info');
 
     const url = addFechasToUrl(
         `/api/mobiliario-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=${encodeURIComponent(placeType)}&radio=${radius}`
@@ -3966,34 +4037,10 @@ function useSavedLocationForSearch() {
     console.log('📍 Tipo de búsqueda actual:', searchType);
     
     if (searchType === 'place') {
-        // Para búsqueda por lugar, mostrar notificación para hacer clic en el mapa
-        showNotification('🎯 Haz clic en el mapa para seleccionar el punto de búsqueda', 'info');
-        
-        // Configurar listener temporal para clic en el mapa
-        const clickHandler = async function(e) {
-            const lat = e.latlng.lat;
-            const lon = e.latlng.lng;
-            
-            // Remover el listener temporal y restaurar cursor
-            map.off('click', clickHandler);
-            map.getContainer().style.cursor = '';
-            document.getElementById('cancelSearch').style.display = 'none';
-            currentClickHandler = null;
-            
-            // Realizar la búsqueda
-            await performPlaceSearch(lat, lon);
-        };
-        
-        // Mostrar botón cancelar
-        document.getElementById('cancelSearch').style.display = 'inline-block';
-        
-        // Agregar indicador visual al cursor
-        map.getContainer().style.cursor = 'crosshair';
-        
-        // Guardar referencia al handler y agregar listener temporal
-        currentClickHandler = clickHandler;
-        map.on('click', clickHandler);
-        
+        performPlaceSearch(savedLocation.lat, savedLocation.lon).catch((error) => {
+            console.error('Error en búsqueda por lugar (ubicación guardada):', error);
+            showNotification(`Error: ${error.message}`, 'error');
+        });
     } else if (searchType === 'coordinates') {
         // Para búsqueda por coordenadas, llenar los campos
         document.getElementById('coordLat').value = savedLocation.lat.toFixed(6);
@@ -4022,7 +4069,8 @@ async function performPlaceSearch(lat, lon) {
     }
     
     try {
-        showNotification(`Buscando ${placeType} en un radio de ${radius} km...`, 'info');
+        const label = getSelectedPlaceTypeLabel() || placeType;
+        showNotification(`Buscando ${label} en un radio de ${radius} km...`, 'info');
         
         const url = addFechasToUrl(`/api/recursos-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=${placeType}&radio=${radius}`);
         const data = await fetchGisJson(url);
@@ -4183,7 +4231,7 @@ function displaySearchResults(data, searchType, searchParams) {
     searchMarker.bindPopup(`
         <div style="text-align: center;">
             <h4>🎯 Punto de Búsqueda</h4>
-            <p><strong>Tipo:</strong> ${searchType === 'place' ? 'Lugar' : searchType === 'coordinates' ? 'Coordenadas' : 'Dirección'}</p>
+            <p><strong>Tipo:</strong> ${searchType === 'place' ? (data.descripcion || 'Lugar') : searchType === 'coordinates' ? 'Coordenadas' : 'Dirección'}</p>
             <p><strong>Coordenadas:</strong> ${lat.toFixed(6)}, ${lon.toFixed(6)}</p>
             <p><strong>Radio:</strong> ${radius} km</p>
             ${searchParams.address ? `<p><strong>Dirección:</strong> ${searchParams.address}</p>` : ''}
@@ -4401,10 +4449,7 @@ function clearSearchResults() {
 
 // Cancelar búsqueda por clic
 function cancelSearch() {
-    if (currentClickHandler) {
-        map.off('click', currentClickHandler);
-        currentClickHandler = null;
-    }
+    detachMapClickListeners();
     
     // Restaurar estado normal
     map.getContainer().style.cursor = '';
@@ -4907,11 +4952,6 @@ function startZoneDrawing() {
     
     console.log('🎨 Dibujo de zona iniciado correctamente');
     
-    // Test directo del mapa
-    console.log('🧪 Probando click directo en el mapa...');
-    map.on('click', function(e) {
-        console.log('🧪 TEST: Click detectado en el mapa!', e.latlng);
-    });
 }
 
 // Mostrar controles de dibujo en la interfaz principal
