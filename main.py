@@ -1104,6 +1104,9 @@ def update_mobiliario_coordinates(cursor, emplazamiento_id, lat, lon):
 app = Flask(__name__)
 CORS(app)
 
+# Incrementar en cada publicación (cache-bust del navegador)
+GIS_APP_BUILD = os.getenv('GIS_APP_BUILD', '20260930-place-search-3')
+
 app.config['SECRET_KEY'] = Config.SECRET_KEY
 app.config['SESSION_COOKIE_HTTPONLY'] = True
 app.config['SESSION_COOKIE_SAMESITE'] = 'Lax'
@@ -1134,6 +1137,17 @@ PUBLIC_ROUTES = {
 PUBLIC_ROUTE_PREFIXES = (
     '/static/',
 )
+
+
+@app.after_request
+def _cache_headers_for_app_bundle(response):
+    """Evita que IIS/navegador sirvan app.js obsoleto (búsqueda por lugar rota)."""
+    path = request.path or ''
+    if path.startswith('/static/js/app.js') or path.startswith('/static/css/style.css'):
+        response.headers['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+    return response
 
 
 def requiere_autenticacion(f):
@@ -1633,12 +1647,8 @@ def api_whatsapp_ultima_respuesta():
 
 
 def _static_asset_version():
-    """Versión para cache-bust de JS/CSS (mtime del bundle principal)."""
-    try:
-        static_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'static', 'js', 'app.js')
-        return str(int(os.path.getmtime(static_root)))
-    except OSError:
-        return '0'
+    """Versión para cache-bust de JS/CSS."""
+    return GIS_APP_BUILD
 
 
 @app.route('/')
@@ -1650,6 +1660,7 @@ def index():
         sso_enabled=sso_auth.is_sso_enabled(),
         sso_launch_url=sso_auth.sso_launch_url(),
         asset_version=_static_asset_version(),
+        gis_app_build=GIS_APP_BUILD,
     )
 
 @app.route('/api/geodata')

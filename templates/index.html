@@ -112,8 +112,8 @@
                             <input type="number" id="placeRadius" class="form-control" value="5" min="0.1" max="50" step="0.1" required>
                             <small class="form-text text-muted">Obligatorio: entre 0.1 y 50 km</small>
                         </div>
-                        <button id="searchByPlace" class="btn btn-warning">Buscar Recursos Cerca</button>
-                        <button id="searchMobiliarioByPlace" class="btn btn-info">Buscar Mobiliario Cerca</button>
+                        <button id="searchByPlace" class="btn btn-warning">Buscar comercios + recursos</button>
+                        <button id="searchMobiliarioByPlace" class="btn btn-info">Buscar comercios + mobiliario</button>
                         <button id="useSavedLocationPlace" class="btn btn-info" title="Elegir punto en el mapa o usar ubicación GPS">📍 ¿Dónde buscar?</button>
                         <small class="form-text text-muted">Centra el mapa donde quieras y pulsa buscar, o «¿Dónde buscar?» para marcar el punto.</small>
                         <button id="cancelSearch" class="btn btn-secondary" style="display: none;">Cancelar Búsqueda</button>
@@ -443,6 +443,7 @@
     </script>
     <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
     <script src="{{ url_for('static', filename='js/vendor/qrcode.min.js') }}"></script>
+    <script>window.__GIS_APP_BUILD__ = "{{ gis_app_build }}";</script>
     <script src="{{ url_for('static', filename='js/app.js') }}?v={{ asset_version }}"></script>
 </body>
 </html>

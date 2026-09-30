@@ -37,6 +37,88 @@ function getAuthRequestHeaders() {
     return headers;
 }
 
+function clearMapSearchAlert() {
+    const el = document.getElementById('mapSearchAlert');
+    if (el) {
+        el.style.display = 'none';
+        el.textContent = '';
+    }
+}
+
+function showMapSearchAlert(message, type = 'error') {
+    const host = document.querySelector('.map-container');
+    if (!host) {
+        showNotification(message, type, 30000);
+        return;
+    }
+    let el = document.getElementById('mapSearchAlert');
+    if (!el) {
+        el = document.createElement('div');
+        el.id = 'mapSearchAlert';
+        el.setAttribute('role', 'alert');
+        el.style.cssText = [
+            'position:absolute',
+            'top:12px',
+            'left:50%',
+            'transform:translateX(-50%)',
+            'z-index:2000',
+            'max-width:min(520px,92%)',
+            'padding:12px 16px',
+            'border-radius:8px',
+            'font-weight:600',
+            'font-size:14px',
+            'line-height:1.4',
+            'box-shadow:0 4px 14px rgba(0,0,0,.25)',
+        ].join(';');
+        host.style.position = 'relative';
+        host.appendChild(el);
+    }
+    el.style.background = type === 'error' ? '#f8d7da' : '#fff3cd';
+    el.style.color = type === 'error' ? '#721c24' : '#856404';
+    el.style.border = type === 'error' ? '1px solid #f5c6cb' : '1px solid #ffeeba';
+    el.textContent = message;
+    el.style.display = 'block';
+    showNotification(message, type, 30000);
+}
+
+async function fetchGooglePlacesDiagnostico(lat, lon, placeType) {
+    const url = `/api/google-places/diagnostico?lat=${lat}&lon=${lon}&tipo_lugar=${encodeURIComponent(placeType)}&radio=5`;
+    const data = await fetchGisJson(url);
+    if (data.ok) {
+        return `Google OK en servidor (${data.lugares_encontrados} comercios de prueba).`;
+    }
+    const parts = [];
+    if (data.error) parts.push(data.error);
+    if (data.message) parts.push(data.message);
+    if (data.google_key_source) parts.push(`Clave: ${data.google_key_source}`);
+    return parts.join(' ') || 'Google Places no respondió en el servidor.';
+}
+
+async function ensurePlaceTypeSearchPayload(data, lat, lon, placeType) {
+    const wrongTipo = data.tipo_busqueda === 'mobiliario_coordenadas' || data.tipo_busqueda === 'coordenadas';
+    if (wrongTipo) {
+        throw new Error(
+            'La app está usando una búsqueda antigua (solo radio, sin Google Places). '
+            + 'Pulsa Ctrl+F5 para recargar sin caché.'
+        );
+    }
+
+    const lugares = data.lugares || [];
+    const count = data.lugares_encontrados ?? lugares.length;
+    if (count > 0 && lugares.length > 0) {
+        clearMapSearchAlert();
+        return data;
+    }
+
+    let detail = data.mensaje || data.error || 'Google no devolvió comercios en esa zona.';
+    try {
+        detail += ' ' + (await fetchGooglePlacesDiagnostico(lat, lon, placeType));
+    } catch (diagErr) {
+        detail += ` (${diagErr.message})`;
+    }
+    throw new Error(detail);
+}
+
 async function fetchGisJson(url, options = {}) {
     const response = await fetch(url, {
         credentials: 'same-origin',
@@ -3204,6 +3286,10 @@ document.addEventListener('DOMContentLoaded', async function() {
     // Configurar búsqueda por clic en el mapa (deshabilitado para evitar conflictos)
     // setupMapClickSearch();
     
+    if (window.__GIS_APP_BUILD__) {
+        console.info('GIS build', window.__GIS_APP_BUILD__);
+    }
+
     console.log('Aplicación GIS Web App cargada correctamente');
 });
 
@@ -3587,11 +3673,13 @@ async function searchMobiliarioByPlace() {
         await performMobiliarioPlaceSearch(center.lat, center.lon);
     } catch (error) {
         console.error('Error en búsqueda de mobiliario por lugar:', error);
-        showNotification(`Error: ${error.message}`, 'error');
+        clearSearchResults();
+        showMapSearchAlert(error.message || String(error), 'error');
     }
 }
 
 async function performMobiliarioPlaceSearch(lat, lon) {
+    try {
     const placeType = document.getElementById('placeType').value;
     const radius = parseFloat(document.getElementById('placeRadius').value);
 
@@ -3606,13 +3694,20 @@ async function performMobiliarioPlaceSearch(lat, lon) {
     const url = addFechasToUrl(
         `/api/mobiliario-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=${encodeURIComponent(placeType)}&radio=${radius}`
     );
-    const data = await fetchGisJson(url);
+    const raw = await fetchGisJson(url);
+    const data = await ensurePlaceTypeSearchPayload(raw, lat, lon, placeType);
 
     if (data.places_warning) {
         showNotification(data.places_warning, 'warning', 12000);
     }
 
     displayMobiliarioSearchResults(data, 'place', { lat, lon, radius });
+    } catch (error) {
+        console.error('Error en performMobiliarioPlaceSearch:', error);
+        clearSearchResults();
+        showMapSearchAlert(error.message || String(error), 'error');
+        throw error;
+    }
 }
 
 async function searchMobiliarioByCoordinates() {
@@ -4091,7 +4186,8 @@ async function performPlaceSearch(lat, lon) {
         const url = addFechasToUrl(
             `/api/recursos-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=${encodeURIComponent(placeType)}&radio=${radius}`
         );
-        const data = await fetchGisJson(url);
+        const raw = await fetchGisJson(url);
+        const data = await ensurePlaceTypeSearchPayload(raw, lat, lon, placeType);
 
         if (data.places_warning) {
             showNotification(data.places_warning, 'warning', 12000);
@@ -4101,11 +4197,8 @@ async function performPlaceSearch(lat, lon) {
         
     } catch (error) {
         console.error('Error en búsqueda por lugar:', error);
-        let msg = error.message || String(error);
-        if (/Google Places|502|Places API/i.test(msg)) {
-            msg += ' Comprueba /api/google-places/diagnostico (con sesión iniciada) o GOOGLE_MAPS_API_KEY en el servidor.';
-        }
-        showNotification(`Error: ${msg}`, 'error', 20000);
+        clearSearchResults();
+        showMapSearchAlert(error.message || String(error), 'error');
     }
 }
 
