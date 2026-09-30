@@ -2643,7 +2643,11 @@ async function cargarMobiliarioPopupDetalle(marker, mobiliario) {
 }
 
 function crearMarcadorMobiliario(mobiliario, distanciaKm) {
-    if (!mobiliario.PuntoX || !mobiliario.PuntoY) return null;
+    if (mobiliario.PuntoX == null || mobiliario.PuntoY == null ||
+        isNaN(mobiliario.PuntoX) || isNaN(mobiliario.PuntoY) ||
+        mobiliario.PuntoX === 0 || mobiliario.PuntoY === 0) {
+        return null;
+    }
 
     const tipoInfo = getTipoParadaInfo(mobiliario);
     const color = getMobiliarioMarkerColor(mobiliario);
@@ -3491,7 +3495,13 @@ async function searchMobiliarioNearPoint(lat, lon, radius, searchType, extraPara
 }
 
 async function searchMobiliarioByPlace() {
+    const placeType = document.getElementById('placeType').value;
     const radius = parseFloat(document.getElementById('placeRadius').value);
+
+    if (!placeType) {
+        showNotification('Por favor selecciona un tipo de lugar', 'error');
+        return;
+    }
 
     if (!radius || radius <= 0 || radius > 50) {
         showNotification('Por favor introduce un radio válido entre 0.1 y 50 km', 'error');
@@ -3499,16 +3509,35 @@ async function searchMobiliarioByPlace() {
     }
 
     beginMapClickSearch(
-        '🎯 Haz clic en el mapa: centro del radio para buscar mobiliario',
+        '🎯 Haz clic en el mapa: centro donde buscar lugares y mobiliario cercano',
         async (lat, lon) => {
             try {
-                await searchMobiliarioNearPoint(lat, lon, radius, 'place');
+                await performMobiliarioPlaceSearch(lat, lon);
             } catch (error) {
                 console.error('Error en búsqueda de mobiliario por lugar:', error);
                 showNotification(`Error: ${error.message}`, 'error');
             }
         }
     );
+}
+
+async function performMobiliarioPlaceSearch(lat, lon) {
+    const placeType = document.getElementById('placeType').value;
+    const radius = parseFloat(document.getElementById('placeRadius').value);
+
+    if (!placeType) {
+        showNotification('Por favor selecciona un tipo de lugar', 'error');
+        return;
+    }
+
+    showNotification(`Buscando ${placeType} y mobiliario en un radio de ${radius} km...`, 'info');
+
+    const url = addFechasToUrl(
+        `/api/mobiliario-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=${encodeURIComponent(placeType)}&radio=${radius}`
+    );
+    const data = await fetchGisJson(url);
+
+    displayMobiliarioSearchResults(data, 'place', { lat, lon, radius });
 }
 
 async function searchMobiliarioByCoordinates() {
@@ -4094,6 +4123,30 @@ function clearCoordinates() {
     showNotification('Coordenadas limpiadas', 'info');
 }
 
+function appendLugaresMarkers(data, targetLayer) {
+    if (!data.lugares || data.lugares.length === 0) return;
+    data.lugares.forEach(lugar => {
+        const placeIcon = L.divIcon({
+            className: 'place-marker',
+            html: '📍',
+            iconSize: [24, 24],
+            iconAnchor: [12, 12]
+        });
+
+        const placeMarker = L.marker([lugar.lat, lugar.lon], { icon: placeIcon });
+        placeMarker.bindPopup(`
+            <div>
+                <h4>📍 ${lugar.nombre}</h4>
+                <p><strong>Tipo:</strong> ${data.descripcion || lugar.tipo}</p>
+                <p><strong>Dirección:</strong> ${lugar.vicinity || 'No disponible'}</p>
+                <p><strong>Rating:</strong> ${lugar.rating || 'N/A'}</p>
+                <p><strong>Distancia al centro:</strong> ${lugar.distancia_km.toFixed(2)} km</p>
+            </div>
+        `);
+        targetLayer.addLayer(placeMarker);
+    });
+}
+
 // Mostrar resultados de búsqueda en el mapa
 function displaySearchResults(data, searchType, searchParams) {
     console.log('📊 Mostrando resultados de búsqueda...');
@@ -4150,29 +4203,7 @@ function displaySearchResults(data, searchType, searchParams) {
     });
     searchLayer.addLayer(radiusCircle);
     
-    // Mostrar lugares encontrados (si los hay)
-    if (data.lugares && data.lugares.length > 0) {
-        data.lugares.forEach(lugar => {
-            const placeIcon = L.divIcon({
-                className: 'place-marker',
-                html: '📍',
-                iconSize: [24, 24],
-                iconAnchor: [12, 12]
-            });
-            
-            const placeMarker = L.marker([lugar.lat, lugar.lon], { icon: placeIcon });
-            placeMarker.bindPopup(`
-                <div>
-                    <h4>📍 ${lugar.nombre}</h4>
-                    <p><strong>Tipo:</strong> ${data.descripcion || lugar.tipo}</p>
-                    <p><strong>Dirección:</strong> ${lugar.vicinity || 'No disponible'}</p>
-                    <p><strong>Rating:</strong> ${lugar.rating || 'N/A'}</p>
-                    <p><strong>Distancia:</strong> ${lugar.distancia_km.toFixed(2)} km</p>
-                </div>
-            `);
-            placesLayer.addLayer(placeMarker);
-        });
-    }
+    appendLugaresMarkers(data, placesLayer);
     
     // Mostrar recursos encontrados
     if (data.recursos && data.recursos.length > 0) {
@@ -4250,6 +4281,7 @@ function displayMobiliarioSearchResults(data, searchType, searchParams) {
     currentSearchData = data;
     currentSearchType = `mobiliario_${searchType}`;
     searchLayer = L.layerGroup();
+    placesLayer = L.layerGroup();
 
     const { lat, lon, radius } = searchParams;
 
@@ -4260,7 +4292,9 @@ function displayMobiliarioSearchResults(data, searchType, searchParams) {
         iconAnchor: [15, 15]
     });
 
-    const tipoLabel = searchType === 'place' ? 'Lugar' : searchType === 'coordinates' ? 'Coordenadas' : 'Dirección';
+    const tipoLabel = searchType === 'place'
+        ? (data.descripcion || 'Lugar')
+        : searchType === 'coordinates' ? 'Coordenadas' : 'Dirección';
     const searchMarker = L.marker([lat, lon], { icon: searchIcon });
     searchMarker.bindPopup(`
         <div style="text-align: center;">
@@ -4284,17 +4318,28 @@ function displayMobiliarioSearchResults(data, searchType, searchParams) {
     });
     searchLayer.addLayer(radiusCircle);
 
+    appendLugaresMarkers(data, placesLayer);
+
     const mobiliario = data.mobiliario || [];
     mobiliario.forEach((item) => {
-        const marker = crearMarcadorMobiliario(item, item.distancia_km);
+        const dist = item.distancia_km ?? item.distancia_a_lugar_km;
+        const marker = crearMarcadorMobiliario(item, dist);
         if (marker) searchLayer.addLayer(marker);
     });
 
     searchLayer.addTo(map);
+    if (placesLayer.getLayers().length > 0) {
+        placesLayer.addTo(map);
+    }
 
-    if (searchLayer.getLayers().length > 0) {
+    const allLayers = [searchLayer];
+    if (placesLayer.getLayers().length > 0) {
+        allLayers.push(placesLayer);
+    }
+    const group = new L.featureGroup(allLayers);
+    if (group.getLayers().length > 0) {
         try {
-            const bounds = searchLayer.getBounds();
+            const bounds = group.getBounds();
             if (bounds && bounds.isValid && bounds.isValid()) {
                 map.fitBounds(bounds.pad(0.1));
             }
@@ -4306,10 +4351,15 @@ function displayMobiliarioSearchResults(data, searchType, searchParams) {
         map.setView([lat, lon], 13);
     }
 
-    showNotification(
-        `✓ Mobiliario: ${mobiliario.length} parada(s) encontrada(s) en ${radius} km`,
-        'success'
-    );
+    const lugaresCount = data.lugares ? data.lugares.length : 0;
+    if (lugaresCount === 0 && mobiliario.length === 0 && data.mensaje) {
+        showNotification(data.mensaje, 'warning');
+    } else {
+        showNotification(
+            `✓ Búsqueda completada: ${lugaresCount} lugares, ${mobiliario.length} parada(s) de mobiliario`,
+            'success'
+        );
+    }
 }
 
 // Limpiar resultados de búsqueda

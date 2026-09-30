@@ -2213,6 +2213,108 @@ def get_recursos_cerca_lugares():
         print(f"Error en endpoint /api/recursos-cerca-lugares: {e}")
         return jsonify({"error": str(e)}), 500
 
+
+def _mobiliario_cerca_de_lugares(lugares, radio_km):
+    """Filtra mobiliario con coordenadas válidas dentro de radio_km del lugar más cercano."""
+    fecha_desde, fecha_hasta = get_fechas()
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    query = f"""
+        SELECT {MOBILIARIO_CAMPOS}
+        FROM [dbo].[MobiliarioPorFechas](?, ?)
+        WHERE [PuntoX] != 0 AND [PuntoY] != 0
+    """
+    cursor.execute(query, (fecha_desde, fecha_hasta))
+    columns = [column[0] for column in cursor.description]
+    mobiliario_data = []
+
+    for row in cursor.fetchall():
+        item = clean_data(dict(zip(columns, row)))
+        distancias_lugares = []
+        for lugar in lugares:
+            distancia = calcular_distancia_haversine(
+                lugar['lat'], lugar['lon'],
+                item['PuntoY'], item['PuntoX']
+            )
+            distancias_lugares.append({
+                'lugar': lugar['nombre'],
+                'distancia_km': round(distancia, 2)
+            })
+        lugar_mas_cercano = min(distancias_lugares, key=lambda x: x['distancia_km'])
+        if lugar_mas_cercano['distancia_km'] <= radio_km:
+            item['total_incidencias'] = item.get('Incidencia', 0)
+            item['tiene_incidencia'] = 1 if item['total_incidencias'] else 0
+            item['lugar_mas_cercano'] = lugar_mas_cercano
+            item['distancia_a_lugar_km'] = lugar_mas_cercano['distancia_km']
+            item['distancia_km'] = lugar_mas_cercano['distancia_km']
+            mobiliario_data.append(item)
+
+    mobiliario_data.sort(key=lambda x: x['distancia_a_lugar_km'])
+    cursor.close()
+    conn.close()
+    return mobiliario_data
+
+
+@app.route('/api/mobiliario-cerca-lugares')
+def get_mobiliario_cerca_lugares():
+    """Mobiliario (paradas) cerca de lugares encontrados vía Google Places (p. ej. panaderías)."""
+    try:
+        lat = request.args.get('lat', type=float)
+        lon = request.args.get('lon', type=float)
+        tipo_lugar = request.args.get('tipo_lugar')
+        radio_km = request.args.get('radio', 5, type=float)
+
+        if lat is None or lon is None:
+            return jsonify({"error": "Se requieren parámetros lat y lon"}), 400
+        if not tipo_lugar:
+            return jsonify({"error": "Se requiere el parámetro tipo_lugar"}), 400
+
+        tipos_soportados = obtener_tipos_lugares_soportados()
+        if tipo_lugar not in tipos_soportados:
+            return jsonify({
+                "error": f"Tipo de lugar '{tipo_lugar}' no soportado",
+                "tipos_soportados": list(tipos_soportados.keys()),
+                "descripciones": tipos_soportados
+            }), 400
+
+        lugares, places_error = buscar_lugares_cerca(lat, lon, tipo_lugar, radio_km)
+
+        if places_error:
+            return jsonify({
+                "error": places_error,
+                "tipo_lugar": tipo_lugar,
+                "descripcion": tipos_soportados[tipo_lugar],
+                "lugares": [],
+                "mobiliario": [],
+            }), 502
+
+        if not lugares:
+            return jsonify({
+                "mensaje": f"No se encontraron {tipos_soportados[tipo_lugar].lower()} en el área especificada",
+                "tipo_lugar": tipo_lugar,
+                "descripcion": tipos_soportados[tipo_lugar],
+                "lugares": [],
+                "mobiliario": [],
+                "mobiliario_cerca": 0,
+            })
+
+        mobiliario_data = _mobiliario_cerca_de_lugares(lugares, radio_km)
+
+        return jsonify({
+            "tipo_busqueda": tipo_lugar,
+            "descripcion": tipos_soportados[tipo_lugar],
+            "coordenadas_referencia": {"lat": lat, "lon": lon},
+            "radio_km": radio_km,
+            "lugares_encontrados": len(lugares),
+            "lugares": lugares,
+            "mobiliario_cerca": len(mobiliario_data),
+            "mobiliario": mobiliario_data,
+        })
+
+    except Exception as e:
+        print(f"Error en endpoint /api/mobiliario-cerca-lugares: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route('/api/geocodificar-direccion')
 def api_geocodificar_direccion():
     """Devuelve las opciones de geocodificación para una dirección (Google Maps)."""
@@ -2542,8 +2644,6 @@ def get_recursos_cerca_coordenadas():
         print(f"Error en endpoint /api/recursos-cerca-coordenadas: {e}")
         return jsonify({"error": str(e)}), 500
 
-        return jsonify({"error": str(e)}), 500
-
 @app.route('/api/mobiliario-cerca-coordenadas')
 def get_mobiliario_cerca_coordenadas():
     """Mobiliario (paradas) cerca de unas coordenadas."""
@@ -2552,7 +2652,7 @@ def get_mobiliario_cerca_coordenadas():
         lat = request.args.get('lat', type=float)
         lon = request.args.get('lon', type=float)
         radio_km = request.args.get('radio', 5, type=float)
-        if not lat or not lon:
+        if lat is None or lon is None:
             return jsonify({"error": "Se requieren parámetros lat y lon"}), 400
         if not radio_km or radio_km <= 0 or radio_km > 50:
             return jsonify({"error": "Radio debe estar entre 0.1 y 50 km"}), 400
