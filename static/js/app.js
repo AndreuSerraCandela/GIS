@@ -37,6 +37,62 @@ function getAuthRequestHeaders() {
     return headers;
 }
 
+async function fetchGisJson(url, options = {}) {
+    const response = await fetch(url, {
+        credentials: 'same-origin',
+        ...options,
+    });
+    let data = {};
+    try {
+        data = await response.json();
+    } catch (error) {
+        if (!response.ok) {
+            throw new Error(`Error HTTP: ${response.status}`);
+        }
+        throw error;
+    }
+    if (response.status === 401 || data.requires_auth) {
+        throw new Error('Sesión expirada. Vuelve a iniciar sesión.');
+    }
+    if (!response.ok) {
+        throw new Error(data.error || `Error HTTP: ${response.status}`);
+    }
+    if (data.error) {
+        throw new Error(data.error);
+    }
+    return data;
+}
+
+function beginMapClickSearch(message, onPick) {
+    if (!map) {
+        showNotification('El mapa aún no está listo. Espera un momento e inténtalo de nuevo.', 'error');
+        return;
+    }
+    if (currentClickHandler) {
+        map.off('click', currentClickHandler);
+        currentClickHandler = null;
+    }
+    showNotification(message, 'info');
+    map.getContainer().style.cursor = 'crosshair';
+    const cancelBtn = document.getElementById('cancelSearch');
+    if (cancelBtn) {
+        cancelBtn.style.display = 'inline-block';
+    }
+
+    const clickHandler = async function(e) {
+        map.off('click', clickHandler);
+        map.getContainer().style.cursor = '';
+        if (cancelBtn) {
+            cancelBtn.style.display = 'none';
+        }
+        currentClickHandler = null;
+        await onPick(e.latlng.lat, e.latlng.lng);
+    };
+
+    currentClickHandler = clickHandler;
+    map.on('click', clickHandler);
+}
+
 function updateWhatsappConfirmButton(info) {
     const btn = document.getElementById('btnConfirmWhatsapp2fa');
     if (!btn) return;
@@ -3250,88 +3306,19 @@ async function searchByPlace() {
     }
     
     console.log('✅ Validaciones pasadas, iniciando búsqueda...');
-    
-    // Verificar si hay ubicación guardada
-    const savedLocation = getSavedLocation();
-    if (savedLocation) {
-        // Si hay ubicación guardada, preguntar al usuario qué quiere hacer
-        // const useSaved = confirm(
-        //     `¿Quieres usar tu ubicación guardada?\n\n` +
-        //     `Ubicación guardada: ${savedLocation.lat.toFixed(4)}, ${savedLocation.lon.toFixed(4)}\n\n` +
-        //     `• Aceptar: Usar ubicación guardada\n` +
-        //     `• Cancelar: Seleccionar nueva ubicación en el mapa`
-        // );
-        const useSaved = savedLocation.lat.toFixed(4)!=null;
-        
-        if (useSaved) {
-            // Usar ubicación guardada directamente
+
+    beginMapClickSearch(
+        '🎯 Haz clic en el mapa: centro donde buscar lugares y recursos cercanos',
+        async (lat, lon) => {
             try {
-                showNotification(`Buscando ${placeType} en un radio de ${radius} km usando ubicación guardada...`, 'info');
-                
-                const url = addFechasToUrl(`/api/recursos-cerca-lugares?lat=${savedLocation.lat}&lon=${savedLocation.lon}&tipo_lugar=${placeType}&radio=${radius}`);
-                const response = await fetch(url);
-                const data = await response.json();
-                
-                if (data.error) {
-                    throw new Error(data.error);
-                }
-                
-                displaySearchResults(data, 'place', { lat: savedLocation.lat, lon: savedLocation.lon, radius });
-                return;
-                
+                await performPlaceSearch(lat, lon);
             } catch (error) {
-                console.error('Error en búsqueda por lugar con ubicación guardada:', error);
+                console.error('❌ Error en búsqueda por lugar:', error);
                 showNotification(`Error: ${error.message}`, 'error');
-                return;
             }
         }
-    }
-    
-    // Si no hay ubicación guardada o el usuario eligió seleccionar nueva ubicación
-    showNotification('🎯 Haz clic en el mapa para seleccionar el punto de búsqueda', 'info');
-    
-    // Agregar indicador visual al cursor
-    map.getContainer().style.cursor = 'crosshair';
-    
-    // Mostrar botón cancelar
-    document.getElementById('cancelSearch').style.display = 'inline-block';
-    
-    // Configurar listener temporal para clic en el mapa
-    const clickHandler = async function(e) {
-        const lat = e.latlng.lat;
-        const lon = e.latlng.lng;
-        
-        // Remover el listener temporal y restaurar cursor
-        map.off('click', clickHandler);
-        map.getContainer().style.cursor = '';
-        document.getElementById('cancelSearch').style.display = 'none';
-        currentClickHandler = null;
-        
-        try {
-            showNotification(`Buscando ${placeType} en un radio de ${radius} km...`, 'info');
-            
-            const url = addFechasToUrl(`/api/recursos-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=${placeType}&radio=${radius}`);
-            const response = await fetch(url);
-            const data = await response.json();
-            
-            if (data.error) {
-                throw new Error(data.error);
-            }
-            
-            displaySearchResults(data, 'place', { lat, lon, radius });
-            console.log('✅ Resultados mostrados');
-            
-        } catch (error) {
-            console.error('❌ Error en búsqueda por lugar:', error);
-            showNotification(`Error: ${error.message}`, 'error');
-        }
-    };
-    
-    // Guardar referencia al handler y agregar listener temporal
-    currentClickHandler = clickHandler;
-    map.on('click', clickHandler);
-    console.log('✅ Listener de click configurado');
-    
+    );
+
     console.log('✅ Búsqueda por lugar configurada correctamente');
 }
 
@@ -3364,12 +3351,7 @@ async function searchByCoordinates() {
         showNotification(`Buscando recursos en un radio de ${radius} km...`, 'info');
         
         const url = addFechasToUrl(`/api/recursos-cerca-coordenadas?lat=${lat}&lon=${lon}&radio=${radius}`);
-        const response = await fetch(url);
-        const data = await response.json();
-        
-        if (data.error) {
-            throw new Error(data.error);
-        }
+        const data = await fetchGisJson(url);
         
         displaySearchResults(data, 'coordinates', { lat, lon, radius });
         console.log('✅ Resultados mostrados');
@@ -3503,12 +3485,7 @@ async function searchMobiliarioNearPoint(lat, lon, radius, searchType, extraPara
     showNotification(`Buscando mobiliario en un radio de ${radius} km...`, 'info');
 
     const url = addFechasToUrl(`/api/mobiliario-cerca-coordenadas?lat=${lat}&lon=${lon}&radio=${radius}`);
-    const response = await fetch(url);
-    const data = await response.json();
-
-    if (data.error) {
-        throw new Error(data.error);
-    }
+    const data = await fetchGisJson(url);
 
     displayMobiliarioSearchResults(data, searchType, { lat, lon, radius, ...extraParams });
 }
@@ -3521,37 +3498,17 @@ async function searchMobiliarioByPlace() {
         return;
     }
 
-    const savedLocation = getSavedLocation();
-    if (savedLocation) {
-        try {
-            await searchMobiliarioNearPoint(savedLocation.lat, savedLocation.lon, radius, 'place');
-        } catch (error) {
-            console.error('Error en búsqueda de mobiliario por lugar:', error);
-            showNotification(`Error: ${error.message}`, 'error');
+    beginMapClickSearch(
+        '🎯 Haz clic en el mapa: centro del radio para buscar mobiliario',
+        async (lat, lon) => {
+            try {
+                await searchMobiliarioNearPoint(lat, lon, radius, 'place');
+            } catch (error) {
+                console.error('Error en búsqueda de mobiliario por lugar:', error);
+                showNotification(`Error: ${error.message}`, 'error');
+            }
         }
-        return;
-    }
-
-    showNotification('🎯 Haz clic en el mapa para seleccionar el punto de búsqueda de mobiliario', 'info');
-    map.getContainer().style.cursor = 'crosshair';
-    document.getElementById('cancelSearch').style.display = 'inline-block';
-
-    const clickHandler = async function(e) {
-        map.off('click', clickHandler);
-        map.getContainer().style.cursor = '';
-        document.getElementById('cancelSearch').style.display = 'none';
-        currentClickHandler = null;
-
-        try {
-            await searchMobiliarioNearPoint(e.latlng.lat, e.latlng.lng, radius, 'place');
-        } catch (error) {
-            console.error('Error en búsqueda de mobiliario por lugar:', error);
-            showNotification(`Error: ${error.message}`, 'error');
-        }
-    };
-
-    currentClickHandler = clickHandler;
-    map.on('click', clickHandler);
+    );
 }
 
 async function searchMobiliarioByCoordinates() {
@@ -4039,12 +3996,7 @@ async function performPlaceSearch(lat, lon) {
         showNotification(`Buscando ${placeType} en un radio de ${radius} km...`, 'info');
         
         const url = addFechasToUrl(`/api/recursos-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=${placeType}&radio=${radius}`);
-        const response = await fetch(url);
-        const data = await response.json();
-        
-        if (data.error) {
-            throw new Error(data.error);
-        }
+        const data = await fetchGisJson(url);
         
         displaySearchResults(data, 'place', { lat, lon, radius });
         
@@ -4279,10 +4231,14 @@ function displaySearchResults(data, searchType, searchParams) {
     console.log('  - Lugares:', lugaresCount);
     console.log('  - Recursos:', recursosCount);
     
-    showNotification(
-        `✓ Búsqueda completada: ${lugaresCount} lugares, ${recursosCount} recursos encontrados`,
-        'success'
-    );
+    if (lugaresCount === 0 && recursosCount === 0 && data.mensaje) {
+        showNotification(data.mensaje, 'warning');
+    } else {
+        showNotification(
+            `✓ Búsqueda completada: ${lugaresCount} lugares, ${recursosCount} recursos encontrados`,
+            'success'
+        );
+    }
     console.log('✅ Resumen mostrado');
     
     console.log('✅ Resultados de búsqueda mostrados correctamente');

@@ -218,27 +218,32 @@ def buscar_lugares_cerca(lat, lon, tipo_lugar, radio_km=5):
         radio_km: Radio de búsqueda en kilómetros
         
     Returns:
-        list: Lista de lugares encontrados con sus coordenadas
+        tuple[list, str | None]: (lugares, mensaje_error_api)
     """
     try:
+        api_key = (GEOCODING_SERVICES.get('google_maps') or {}).get('api_key') or ''
+        if not api_key or api_key.startswith('YOUR_'):
+            return [], 'Google Places API no configurada en el servidor (api_key).'
+
         # Convertir radio de km a metros para la API
-        radio_metros = radio_km * 1000
+        radio_metros = int(radio_km * 1000)
         
         url = "https://maps.googleapis.com/maps/api/place/nearbysearch/json"
         params = {
             'location': f"{lat},{lon}",
             'radius': radio_metros,
             'type': tipo_lugar,
-            'key': GEOCODING_SERVICES['google_maps']['api_key']
+            'key': api_key,
         }
         
         response = requests.get(url, params=params, timeout=10)
         
         if response.status_code == 200:
             data = response.json()
-            if data['status'] == 'OK':
+            status = data.get('status', 'UNKNOWN')
+            if status in ('OK', 'ZERO_RESULTS'):
                 lugares = []
-                for place in data['results']:
+                for place in data.get('results') or []:
                     lugar = {
                         'nombre': place.get('name', 'Sin nombre'),
                         'lat': place['geometry']['location']['lat'],
@@ -257,17 +262,16 @@ def buscar_lugares_cerca(lat, lon, tipo_lugar, radio_km=5):
                 
                 # Ordenar por distancia
                 lugares.sort(key=lambda x: x['distancia_km'])
-                return lugares
-            else:
-                print(f"Error en Google Places API: {data.get('status', 'Unknown error')}")
-                return []
-        else:
-            print(f"Error HTTP en Google Places API: {response.status_code}")
-            return []
+                return lugares, None
+            err_msg = data.get('error_message') or status
+            print(f"Error en Google Places API: {status} - {err_msg}")
+            return [], f"Google Places API: {err_msg}"
+        print(f"Error HTTP en Google Places API: {response.status_code}")
+        return [], f"Google Places API HTTP {response.status_code}"
             
     except Exception as e:
         print(f"Error al buscar lugares cerca: {e}")
-        return []
+        return [], str(e)
 
 def obtener_tipos_lugares_soportados():
     """
@@ -2074,7 +2078,7 @@ def get_recursos_cerca_lugares():
         tipo_lugar = request.args.get('tipo_lugar')
         radio_km = request.args.get('radio', 5, type=float)
         
-        if not lat or not lon:
+        if lat is None or lon is None:
             return jsonify({"error": "Se requieren parámetros lat y lon"}), 400
         
         if not tipo_lugar:
@@ -2090,7 +2094,16 @@ def get_recursos_cerca_lugares():
             }), 400
         
         # Buscar lugares cerca
-        lugares = buscar_lugares_cerca(lat, lon, tipo_lugar, radio_km)
+        lugares, places_error = buscar_lugares_cerca(lat, lon, tipo_lugar, radio_km)
+        
+        if places_error:
+            return jsonify({
+                "error": places_error,
+                "tipo_lugar": tipo_lugar,
+                "descripcion": tipos_soportados[tipo_lugar],
+                "lugares": [],
+                "recursos": [],
+            }), 502
         
         if not lugares:
             return jsonify({
@@ -2098,7 +2111,8 @@ def get_recursos_cerca_lugares():
                 "tipo_lugar": tipo_lugar,
                 "descripcion": tipos_soportados[tipo_lugar],
                 "lugares": [],
-                "recursos_cerca": []
+                "recursos": [],
+                "recursos_cerca": 0,
             })
         
         # Obtener todos los recursos de la base de datos
