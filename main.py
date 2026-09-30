@@ -938,6 +938,7 @@ init_backend_gtask_login()
 
 PUBLIC_ROUTES = {
     '/',
+    '/api/tipos-lugares',
     '/api/login',
     '/api/logout',
     '/api/auth-status',

@@ -215,6 +215,16 @@ function finalizarAutenticacion(userData) {
     ocultarModalTrustedDevice();
     syncIncidenciasAuthState();
     actualizarUIUsuario();
+    cargarCatalogosFiltros();
+}
+
+function cargarCatalogosFiltros() {
+    if (!isAuthenticated) {
+        return;
+    }
+    loadTiposRecurso();
+    loadEmpresas();
+    loadFamilias();
 }
 
 async function registrarDispositivoConfianza(trust) {
@@ -1490,8 +1500,12 @@ async function loadEmpresas() {
             url += '?' + params.toString();
         }
         
-        const response = await fetch(url);
+        const response = await fetch(url, { credentials: 'same-origin' });
         
+        if (response.status === 401) {
+            empresasSelect.innerHTML = '<option value="">Inicia sesión para ver empresas</option>';
+            return;
+        }
         if (!response.ok) {
             throw new Error(`Error HTTP: ${response.status}`);
         }
@@ -1553,8 +1567,12 @@ async function loadFamilias() {
             url += '?' + params.toString();
         }
         
-        const response = await fetch(url);
+        const response = await fetch(url, { credentials: 'same-origin' });
         
+        if (response.status === 401) {
+            familiasSelect.innerHTML = '<option value="">Inicia sesión para ver familias</option>';
+            return;
+        }
         if (!response.ok) {
             throw new Error(`Error HTTP: ${response.status}`);
         }
@@ -1616,8 +1634,12 @@ async function loadTiposRecurso() {
             url += '?' + params.toString();
         }
         
-        const response = await fetch(url);
+        const response = await fetch(url, { credentials: 'same-origin' });
         
+        if (response.status === 401) {
+            tiposSelect.innerHTML = '<option value="">Inicia sesión para ver tipos</option>';
+            return;
+        }
         if (!response.ok) {
             throw new Error(`Error HTTP: ${response.status}`);
         }
@@ -3016,24 +3038,23 @@ document.addEventListener('DOMContentLoaded', async function() {
     // Inicializar contador de seleccionados
     updateContadorSeleccionados();
     
-    // Cargar tipos de recurso y empresas al iniciar
-    loadTiposRecurso();
-    loadEmpresas();
-    loadFamilias();
+    if (isAuthenticated) {
+        cargarCatalogosFiltros();
+    }
     
     // Recargar tipos, empresas y familias cuando cambien las fechas
     if (fechaDesde) {
         fechaDesde.addEventListener('change', () => {
-            loadTiposRecurso();
-            loadEmpresas();
-            loadFamilias();
+            if (isAuthenticated) {
+                cargarCatalogosFiltros();
+            }
         });
     }
     if (fechaHasta) {
         fechaHasta.addEventListener('change', () => {
-            loadTiposRecurso();
-            loadEmpresas();
-            loadFamilias();
+            if (isAuthenticated) {
+                cargarCatalogosFiltros();
+            }
         });
     }
     // Inicializar el mapa cuando se carga la página
@@ -3139,13 +3160,19 @@ async function loadPlaceTypes() {
     console.log('📂 Cargando tipos de lugares...');
     
     try {
-        const response = await fetch('/api/tipos-lugares');
+        const response = await fetch('/api/tipos-lugares', { credentials: 'same-origin' });
+        if (!response.ok) {
+            throw new Error(`Error HTTP: ${response.status}`);
+        }
         const data = await response.json();
         
         console.log('✅ Respuesta recibida:', data);
         
         if (data.error) {
             throw new Error(data.error);
+        }
+        if (!data.tipos_lugares || typeof data.tipos_lugares !== 'object') {
+            throw new Error('Respuesta de tipos de lugares inválida');
         }
         
         const select = document.getElementById('placeType');
