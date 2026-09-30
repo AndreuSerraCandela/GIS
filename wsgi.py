@@ -19,6 +19,13 @@ if project_dir not in sys.path:
 # Cambiar al directorio del proyecto
 os.chdir(project_dir)
 
+# Cargar .env del sitio IIS antes de importar main (GOOGLE_MAPS_API_KEY, etc.)
+try:
+    from dotenv import load_dotenv
+    load_dotenv(os.path.join(project_dir, ".env"))
+except ImportError:
+    pass
+
 # Logging para debugging
 try:
     log_file = os.path.join(project_dir, 'logs', 'wsgi.log')

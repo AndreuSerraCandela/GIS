@@ -3279,9 +3279,13 @@ async function loadPlaceTypes() {
 
         if (data.google_places_ready === false) {
             showNotification(
-                'Google Places no está configurado en el servidor: las búsquedas por tipo de lugar no devolverán comercios.',
+                'Google Places no está listo en el servidor. Revisa GOOGLE_MAPS_API_KEY en el .env de IIS y recicla el pool GIS-App.',
                 'warning',
                 15000
+            );
+        } else if (data.google_key_source === 'repo_default') {
+            console.info(
+                'Google Places usa la clave del repositorio; en producción conviene GOOGLE_MAPS_API_KEY en .env del servidor.'
             );
         }
     } catch (error) {
@@ -4097,7 +4101,11 @@ async function performPlaceSearch(lat, lon) {
         
     } catch (error) {
         console.error('Error en búsqueda por lugar:', error);
-        showNotification(`Error: ${error.message}`, 'error');
+        let msg = error.message || String(error);
+        if (/Google Places|502|Places API/i.test(msg)) {
+            msg += ' Comprueba /api/google-places/diagnostico (con sesión iniciada) o GOOGLE_MAPS_API_KEY en el servidor.';
+        }
+        showNotification(`Error: ${msg}`, 'error', 20000);
     }
 }
 

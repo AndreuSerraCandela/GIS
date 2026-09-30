@@ -86,6 +86,32 @@ El script te pedirá el nombre del Application Pool. Si no lo sabes:
 4. Para la carpeta `logs`:
    - Mismos permisos + **Write**
 
+## Paso 6b: Google Maps / Places (panaderías, farmacias, geocodificación)
+
+La búsqueda por **tipo de lugar** usa **Google Places** desde el servidor IIS (no desde el navegador).
+
+1. En Google Cloud Console, en el proyecto de la clave:
+   - Activa **Places API** y **Geocoding API** (y facturación si Google lo exige).
+   - En **Credenciales → tu API key**:
+     - Restricción por **IP**: añade la IP pública de salida del servidor IIS.
+     - O restricción por **referrer** solo para el JS del mapa (`https://gis.malla.es/*`); la Places **Nearby Search** la llama el **servidor**, así que la IP del servidor suele ser obligatoria.
+
+2. En el servidor, crea o edita `C:\inetpub\wwwroot\Gis\.env` (misma carpeta que `wsgi.py`):
+
+```env
+GOOGLE_MAPS_API_KEY=tu_clave_de_google_cloud
+```
+
+3. Recicla el application pool **GIS-App** (o `iisreset`).
+
+4. Con sesión iniciada en gis.malla.es, abre en el navegador:
+
+`https://gis.malla.es/api/google-places/diagnostico?lat=39.57&lon=2.65&tipo_lugar=bakery`
+
+Debe devolver `"ok": true` y `lugares_encontrados` > 0. Si `"error"` contiene `REQUEST_DENIED`, la clave o las APIs/restricciones IP están mal.
+
+Opcional: respaldo OpenStreetMap solo si lo activas explícitamente (`PLACES_OSM_FALLBACK=true`). Por defecto **solo Google**.
+
 ## Paso 7: Probar Localmente en el Servidor
 
 **En el servidor**, prueba que wsgi.py funciona:

@@ -18,7 +18,13 @@ import time
 from datetime import datetime, date
 from config.config import Config
 from config.database import get_db_connection
-from config.api_keys import GEOCODING_SERVICES, SEARCH_CONFIG
+from config.api_keys import (
+    GEOCODING_SERVICES,
+    SEARCH_CONFIG,
+    places_osm_fallback_enabled,
+    refresh_google_maps_api_key,
+    resolve_google_maps_api_key,
+)
 from config.bc_incidencias import INCIDENCIAS_URL, BC_CONFIG
 from gtask_auth import GTaskAuth
 from gtask_service import init_backend_gtask_login
@@ -222,9 +228,14 @@ def buscar_lugares_cerca(lat, lon, tipo_lugar, radio_km=5):
         tuple[list, str | None]: (lugares, mensaje_error_api)
     """
     try:
+        refresh_google_maps_api_key()
         api_key = (GEOCODING_SERVICES.get('google_maps') or {}).get('api_key') or ''
         if not api_key or api_key.startswith('YOUR_'):
-            return [], 'Google Places API no configurada en el servidor (api_key).'
+            return [], (
+                'Google Places API no configurada en el servidor. '
+                'Añade GOOGLE_MAPS_API_KEY en el .env de IIS (C:\\inetpub\\wwwroot\\Gis\\.env) '
+                'y recicla el pool GIS-App.'
+            )
 
         # Convertir radio de km a metros para la API
         radio_metros = int(radio_km * 1000)
@@ -423,14 +434,16 @@ def resolver_lugares_cerca(lat, lon, tipo_lugar, radio_km=5):
             lugar['fuente'] = 'google'
         return lugares, google_err, 'google'
 
-    lugares_osm, osm_err = buscar_lugares_osm(lat, lon, tipo_lugar, radio_km)
-    if lugares_osm:
-        aviso = google_err
-        if aviso:
-            aviso = f"{aviso} Se usaron datos OpenStreetMap."
-        return lugares_osm, aviso, 'osm'
+    if places_osm_fallback_enabled():
+        lugares_osm, osm_err = buscar_lugares_osm(lat, lon, tipo_lugar, radio_km)
+        if lugares_osm:
+            aviso = google_err
+            if aviso:
+                aviso = f"{aviso} (respaldo OpenStreetMap activado con PLACES_OSM_FALLBACK)."
+            return lugares_osm, aviso, 'osm'
+        return [], google_err or osm_err or 'No se encontraron lugares en el área', None
 
-    return [], google_err or osm_err or 'No se encontraron lugares en el área', None
+    return [], google_err or 'No se encontraron lugares en el área (Google Places)', None
 
 
 def obtener_tipos_lugares_soportados():
@@ -729,8 +742,10 @@ def geocode_with_google_maps(parada, description, address):
                 print(f"Google Maps error para parada {parada}: {data.get('status', 'Unknown error')} - {data.get('error_message', '')}")
                 # Si la API key es inválida, deshabilitar Google Maps temporalmente
                 if data.get('status') == 'REQUEST_DENIED':
-                    print("API key de Google Maps inválida, deshabilitando temporalmente...")
-                    GEOCODING_SERVICES['google_maps']['enabled'] = False
+                    print(
+                        "Google Maps REQUEST_DENIED: revisa GOOGLE_MAPS_API_KEY, "
+                        "Places API, Geocoding API y restricciones IP en Google Cloud."
+                    )
         else:
             print(f"Google Maps HTTP error para parada {parada}: {response.status_code}")
         
@@ -2697,19 +2712,73 @@ def get_recursos_cerca():
         print(f"Error en endpoint /api/recursos-cerca: {e}")
         return jsonify({"error": str(e)}), 500
 
+@app.route('/api/google-places/diagnostico')
+def google_places_diagnostico():
+    """
+    Prueba Google Places desde el propio servidor (misma ruta que la búsqueda de panaderías).
+    Requiere sesión. No expone la clave completa.
+    """
+    try:
+        lat = request.args.get('lat', 39.5696, type=float)
+        lon = request.args.get('lon', 2.6502, type=float)
+        tipo = (request.args.get('tipo_lugar') or 'bakery').strip()
+
+        key, key_source = refresh_google_maps_api_key()
+        fingerprint = f"…{key[-6:]}" if key and len(key) >= 6 else None
+
+        if not key:
+            return jsonify({
+                "ok": False,
+                "google_key_configured": False,
+                "google_key_source": key_source,
+                "message": (
+                    "Falta GOOGLE_MAPS_API_KEY. Créala en el .env del servidor "
+                    "(C:\\inetpub\\wwwroot\\Gis\\.env) y recicla el application pool GIS-App."
+                ),
+            }), 503
+
+        radio_km = request.args.get('radio', 5, type=float)
+        lugares, err = buscar_lugares_cerca(lat, lon, tipo, radio_km)
+
+        return jsonify({
+            "ok": bool(lugares) and not err,
+            "google_key_configured": True,
+            "google_key_source": key_source,
+            "google_key_fingerprint": fingerprint,
+            "places_osm_fallback": places_osm_fallback_enabled(),
+            "coordenadas_prueba": {"lat": lat, "lon": lon},
+            "tipo_lugar": tipo,
+            "radio_km": radio_km,
+            "lugares_encontrados": len(lugares),
+            "error": err,
+            "apis_requeridas": [
+                "Places API",
+                "Geocoding API",
+            ],
+            "servidor_env": {
+                "GOOGLE_MAPS_API_KEY": "definida" if key_source == "env" else "usa valor del repo (recomendado: .env)",
+            },
+        })
+    except Exception as e:
+        print(f"Error en /api/google-places/diagnostico: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route('/api/tipos-lugares')
 def get_tipos_lugares():
     """API endpoint para obtener todos los tipos de lugares soportados"""
     try:
         tipos_soportados = obtener_tipos_lugares_soportados()
-        api_key = (GEOCODING_SERVICES.get('google_maps') or {}).get('api_key') or ''
+        key, key_source = refresh_google_maps_api_key()
         google_places_ready = bool(
-            api_key and not api_key.startswith('YOUR_') and GEOCODING_SERVICES.get('google_maps', {}).get('enabled')
+            key and not key.startswith('YOUR_') and GEOCODING_SERVICES.get('google_maps', {}).get('enabled')
         )
         return jsonify({
             "total_tipos": len(tipos_soportados),
             "tipos_lugares": tipos_soportados,
             "google_places_ready": google_places_ready,
+            "google_key_source": key_source,
+            "places_primary": "google",
         })
     except Exception as e:
         print(f"Error en endpoint /api/tipos-lugares: {e}")
