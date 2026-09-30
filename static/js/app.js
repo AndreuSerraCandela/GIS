@@ -1875,8 +1875,8 @@ function initMobilePopupSheet() {
 function initMap() {
     console.log('🗺️ Inicializando mapa...');
     
-    // Crear el mapa centrado en España (ajustar según tu ubicación)
-    map = L.map('map').setView([40.4168, -3.7038], 6);
+    // Centrado en Islas Baleares (donde están los datos GIS)
+    map = L.map('map').setView([39.5696, 2.6502], 10);
     console.log('✅ Mapa creado:', map);
     
     // Agregar capa de tiles de OpenStreetMap
@@ -3175,10 +3175,6 @@ document.addEventListener('DOMContentLoaded', async function() {
     document.getElementById('searchByAddress').addEventListener('click', searchByAddress);
     document.getElementById('searchByStop').addEventListener('click', searchByStop);
     document.getElementById('searchMobiliarioByPlace').addEventListener('click', searchMobiliarioByPlace);
-    const pickPlaceBtn = document.getElementById('pickPlaceSearchPoint');
-    if (pickPlaceBtn) {
-        pickPlaceBtn.addEventListener('click', () => pickPlaceSearchPoint('recursos'));
-    }
     document.getElementById('searchMobiliarioByCoordinates').addEventListener('click', searchMobiliarioByCoordinates);
     document.getElementById('searchMobiliarioByAddress').addEventListener('click', searchMobiliarioByAddress);
     document.getElementById('searchByZone').addEventListener('click', searchByZone);
@@ -3368,7 +3364,7 @@ async function searchByPlace() {
     }
 }
 
-async function pickPlaceSearchPoint(mode = 'recursos') {
+function startPlaceSearchMapPick(mode = 'recursos') {
     const placeType = document.getElementById('placeType').value;
     const radius = parseFloat(document.getElementById('placeRadius').value);
 
@@ -3382,7 +3378,7 @@ async function pickPlaceSearchPoint(mode = 'recursos') {
     }
 
     beginMapClickSearch(
-        '🎯 Haz clic en el mapa: centro de la búsqueda',
+        '🎯 Haz clic en el mapa: ahí será el centro de la búsqueda',
         async (lat, lon) => {
             try {
                 if (mode === 'mobiliario') {
@@ -3607,6 +3603,10 @@ async function performMobiliarioPlaceSearch(lat, lon) {
         `/api/mobiliario-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=${encodeURIComponent(placeType)}&radio=${radius}`
     );
     const data = await fetchGisJson(url);
+
+    if (data.places_warning) {
+        showNotification(data.places_warning, 'warning', 12000);
+    }
 
     displayMobiliarioSearchResults(data, 'place', { lat, lon, radius });
 }
@@ -3993,8 +3993,21 @@ function updateSavedLocationButtons() {
             button.style.pointerEvents = '';
             console.log('✅ Estilos anteriores limpiados');
             
+            if (buttonId === 'useSavedLocationPlace') {
+                button.style.display = 'inline-block';
+                button.style.opacity = '1';
+                button.style.pointerEvents = 'auto';
+                if (savedLocation) {
+                    button.title = `Buscar en tu ubicación GPS: ${savedLocation.lat.toFixed(4)}, ${savedLocation.lon.toFixed(4)}`;
+                    button.onclick = () => useSavedLocationForSearch();
+                } else {
+                    button.title = 'Haz clic en el mapa para elegir el centro de la búsqueda';
+                    button.onclick = () => startPlaceSearchMapPick('recursos');
+                }
+                return;
+            }
+
             if (savedLocation) {
-                // Botón habilitado
                 button.style.display = 'inline-block';
                 button.style.opacity = '1';
                 button.style.pointerEvents = 'auto';
@@ -4002,7 +4015,6 @@ function updateSavedLocationButtons() {
                 button.onclick = () => useSavedLocationForSearch();
                 console.log(`✅ Botón ${buttonId} HABILITADO`);
             } else {
-                // Botón deshabilitado
                 button.style.display = 'inline-block';
                 button.style.opacity = '0.5';
                 button.style.pointerEvents = 'none';
@@ -4072,9 +4084,15 @@ async function performPlaceSearch(lat, lon) {
         const label = getSelectedPlaceTypeLabel() || placeType;
         showNotification(`Buscando ${label} en un radio de ${radius} km...`, 'info');
         
-        const url = addFechasToUrl(`/api/recursos-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=${placeType}&radio=${radius}`);
+        const url = addFechasToUrl(
+            `/api/recursos-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=${encodeURIComponent(placeType)}&radio=${radius}`
+        );
         const data = await fetchGisJson(url);
-        
+
+        if (data.places_warning) {
+            showNotification(data.places_warning, 'warning', 12000);
+        }
+
         displaySearchResults(data, 'place', { lat, lon, radius });
         
     } catch (error) {
@@ -4173,22 +4191,33 @@ function clearCoordinates() {
 
 function appendLugaresMarkers(data, targetLayer) {
     if (!data.lugares || data.lugares.length === 0) return;
-    data.lugares.forEach(lugar => {
-        const placeIcon = L.divIcon({
-            className: 'place-marker',
-            html: '📍',
-            iconSize: [24, 24],
-            iconAnchor: [12, 12]
-        });
 
-        const placeMarker = L.marker([lugar.lat, lugar.lon], { icon: placeIcon });
+    data.lugares.forEach((lugar) => {
+        const lat = Number(lugar.lat);
+        const lon = Number(lugar.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+
+        const dist = Number(lugar.distancia_km);
+        const distTxt = Number.isFinite(dist) ? dist.toFixed(2) : '?';
+        const nombre = lugar.nombre || 'Sin nombre';
+
+        const placeMarker = L.circleMarker([lat, lon], {
+            radius: 10,
+            color: '#6a1b9a',
+            weight: 2,
+            fillColor: '#e1bee7',
+            fillOpacity: 0.9,
+        });
+        placeMarker.setZIndexOffset(800);
+
         placeMarker.bindPopup(`
             <div>
-                <h4>📍 ${lugar.nombre}</h4>
-                <p><strong>Tipo:</strong> ${data.descripcion || lugar.tipo}</p>
+                <h4>${nombre}</h4>
+                <p><strong>Tipo:</strong> ${data.descripcion || lugar.tipo || ''}</p>
                 <p><strong>Dirección:</strong> ${lugar.vicinity || 'No disponible'}</p>
                 <p><strong>Rating:</strong> ${lugar.rating || 'N/A'}</p>
-                <p><strong>Distancia al centro:</strong> ${lugar.distancia_km.toFixed(2)} km</p>
+                <p><strong>Distancia al centro:</strong> ${distTxt} km</p>
+                ${lugar.fuente ? `<p><strong>Origen:</strong> ${lugar.fuente === 'osm' ? 'OpenStreetMap' : 'Google'}</p>` : ''}
             </div>
         `);
         targetLayer.addLayer(placeMarker);
@@ -4251,7 +4280,14 @@ function displaySearchResults(data, searchType, searchParams) {
     });
     searchLayer.addLayer(radiusCircle);
     
-    appendLugaresMarkers(data, placesLayer);
+    try {
+        appendLugaresMarkers(data, placesLayer);
+    } catch (markerError) {
+        console.error('Error pintando lugares en el mapa:', markerError);
+        showNotification('Error mostrando comercios en el mapa: ' + markerError.message, 'error');
+    }
+
+    console.log('📍 Lugares a pintar:', data.lugares ? data.lugares.length : 0, 'fuente:', data.lugares_fuente);
     
     // Mostrar recursos encontrados
     if (data.recursos && data.recursos.length > 0) {
@@ -4270,6 +4306,12 @@ function displaySearchResults(data, searchType, searchParams) {
     searchLayer.addTo(map);
     if (placesLayer.getLayers().length > 0) {
         placesLayer.addTo(map);
+        if (typeof placesLayer.bringToFront === 'function') {
+            placesLayer.bringToFront();
+        }
+    }
+    if (typeof map !== 'undefined' && map && map.invalidateSize) {
+        map.invalidateSize();
     }
     
     // Ajustar vista del mapa para mostrar todos los resultados
@@ -4310,12 +4352,14 @@ function displaySearchResults(data, searchType, searchParams) {
     console.log('  - Lugares:', lugaresCount);
     console.log('  - Recursos:', recursosCount);
     
-    if (lugaresCount === 0 && recursosCount === 0 && data.mensaje) {
-        showNotification(data.mensaje, 'warning');
+    const fuenteTxt = data.lugares_fuente === 'osm' ? ' (OpenStreetMap)' : data.lugares_fuente === 'google' ? ' (Google)' : '';
+    if (lugaresCount === 0 && recursosCount === 0) {
+        showNotification(data.mensaje || 'No se encontraron comercios ni recursos en esa zona.', 'warning', 15000);
     } else {
         showNotification(
-            `✓ Búsqueda completada: ${lugaresCount} lugares, ${recursosCount} recursos encontrados`,
-            'success'
+            `✓ ${lugaresCount} comercios${fuenteTxt}, ${recursosCount} recursos cerca`,
+            'success',
+            12000
         );
     }
     console.log('✅ Resumen mostrado');

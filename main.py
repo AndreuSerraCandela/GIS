@@ -302,6 +302,137 @@ def buscar_lugares_cerca(lat, lon, tipo_lugar, radio_km=5):
         print(f"Error al buscar lugares cerca: {e}")
         return [], str(e)
 
+
+def _osm_tag_filters_for_place_type(tipo_lugar):
+    """Pares (clave, valor) de tags OSM para un tipo de Google Places."""
+    explicit = {
+        'bakery': [('shop', 'bakery')],
+        'pharmacy': [('amenity', 'pharmacy')],
+        'supermarket': [('shop', 'supermarket')],
+        'gas_station': [('amenity', 'fuel')],
+        'hospital': [('amenity', 'hospital')],
+        'bank': [('amenity', 'bank')],
+        'restaurant': [('amenity', 'restaurant')],
+        'cafe': [('amenity', 'cafe')],
+        'bar': [('amenity', 'bar')],
+        'school': [('amenity', 'school')],
+        'university': [('amenity', 'university')],
+        'police': [('amenity', 'police')],
+        'fire_station': [('amenity', 'fire_station')],
+        'post_office': [('amenity', 'post_office')],
+        'library': [('amenity', 'library')],
+        'museum': [('amenity', 'museum')],
+        'parking': [('amenity', 'parking')],
+        'atm': [('amenity', 'atm')],
+        'bus_station': [('amenity', 'bus_station')],
+        'train_station': [('railway', 'station')],
+        'veterinary_care': [('amenity', 'veterinary')],
+        'dentist': [('amenity', 'dentist')],
+        'doctor': [('amenity', 'doctors')],
+        'church': [('amenity', 'place_of_worship')],
+        'gym': [('leisure', 'fitness_centre')],
+        'park': [('leisure', 'park')],
+        'shopping_mall': [('shop', 'mall')],
+    }
+    if tipo_lugar in explicit:
+        return explicit[tipo_lugar]
+    return [('amenity', tipo_lugar)]
+
+
+def buscar_lugares_osm(lat, lon, tipo_lugar, radio_km=5):
+    """Fallback OpenStreetMap (Overpass) cuando Google Places no devuelve resultados."""
+    tag_filters = _osm_tag_filters_for_place_type(tipo_lugar)
+    if not tag_filters:
+        return [], None
+
+    radius_m = max(100, int(radio_km * 1000))
+    blocks = []
+    for key, value in tag_filters:
+        blocks.append(f'node["{key}"="{value}"](around:{radius_m},{lat},{lon});')
+        blocks.append(f'way["{key}"="{value}"](around:{radius_m},{lat},{lon});')
+    inner = '\n  '.join(blocks)
+    query = f'[out:json][timeout:25];\n(\n  {inner}\n);\nout center 80;'
+
+    try:
+        response = requests.post(
+            'https://overpass-api.de/api/interpreter',
+            data={'data': query},
+            headers={'User-Agent': 'GIS-Malla/1.0 (gis.malla.es)'},
+            timeout=30,
+        )
+        if response.status_code != 200:
+            return [], f'OpenStreetMap HTTP {response.status_code}'
+        data = response.json()
+    except Exception as e:
+        print(f"Error Overpass OSM: {e}")
+        return [], str(e)
+
+    lugares = []
+    seen = set()
+    for element in data.get('elements') or []:
+        if element.get('type') == 'node':
+            plat = element.get('lat')
+            plon = element.get('lon')
+        else:
+            center = element.get('center') or {}
+            plat = center.get('lat')
+            plon = center.get('lon')
+        if plat is None or plon is None:
+            continue
+
+        tags = element.get('tags') or {}
+        nombre = (tags.get('name') or tags.get('brand') or tags.get('operator') or 'Comercio OSM').strip()
+        key = (round(float(plat), 5), round(float(plon), 5), nombre.lower())
+        if key in seen:
+            continue
+        seen.add(key)
+
+        distancia = calcular_distancia_haversine(lat, lon, plat, plon)
+        if distancia > radio_km:
+            continue
+
+        calle = tags.get('addr:street') or ''
+        num = tags.get('addr:housenumber') or ''
+        vicinity = ' '.join(p for p in (calle, num) if p).strip()
+
+        lugares.append({
+            'nombre': nombre,
+            'lat': float(plat),
+            'lon': float(plon),
+            'rating': 0,
+            'vicinity': vicinity,
+            'place_id': f"osm/{element.get('type')}/{element.get('id')}",
+            'tipo': tipo_lugar,
+            'distancia_km': distancia,
+            'fuente': 'osm',
+        })
+
+    lugares.sort(key=lambda x: x['distancia_km'])
+    return lugares, None
+
+
+def resolver_lugares_cerca(lat, lon, tipo_lugar, radio_km=5):
+    """
+    Google Places primero; si falla o no hay resultados, OpenStreetMap.
+    Returns:
+        tuple[list, str|None, str|None]: lugares, aviso/error opcional, fuente ('google'|'osm')
+    """
+    lugares, google_err = buscar_lugares_cerca(lat, lon, tipo_lugar, radio_km)
+    if lugares:
+        for lugar in lugares:
+            lugar['fuente'] = 'google'
+        return lugares, google_err, 'google'
+
+    lugares_osm, osm_err = buscar_lugares_osm(lat, lon, tipo_lugar, radio_km)
+    if lugares_osm:
+        aviso = google_err
+        if aviso:
+            aviso = f"{aviso} Se usaron datos OpenStreetMap."
+        return lugares_osm, aviso, 'osm'
+
+    return [], google_err or osm_err or 'No se encontraron lugares en el área', None
+
+
 def obtener_tipos_lugares_soportados():
     """
     Devuelve la lista de tipos de lugares soportados por Google Places API
@@ -2132,27 +2263,19 @@ def get_recursos_cerca_lugares():
                 "descripciones": tipos_soportados
             }), 400
         
-        # Buscar lugares cerca
-        lugares, places_error = buscar_lugares_cerca(lat, lon, tipo_lugar, radio_km)
-        
-        if places_error:
-            return jsonify({
-                "error": places_error,
-                "tipo_lugar": tipo_lugar,
-                "descripcion": tipos_soportados[tipo_lugar],
-                "lugares": [],
-                "recursos": [],
-            }), 502
-        
+        lugares, places_warning, lugares_fuente = resolver_lugares_cerca(lat, lon, tipo_lugar, radio_km)
+
         if not lugares:
             return jsonify({
+                "error": places_warning or f"No se encontraron {tipos_soportados[tipo_lugar].lower()} en el área",
                 "mensaje": f"No se encontraron {tipos_soportados[tipo_lugar].lower()} en el área especificada",
                 "tipo_lugar": tipo_lugar,
                 "descripcion": tipos_soportados[tipo_lugar],
                 "lugares": [],
                 "recursos": [],
                 "recursos_cerca": 0,
-            })
+                "lugares_fuente": lugares_fuente,
+            }), 502
         
         # Obtener todos los recursos de la base de datos
         conn = get_db_connection()
@@ -2237,7 +2360,7 @@ def get_recursos_cerca_lugares():
         cursor.close()
         conn.close()
         
-        return jsonify({
+        payload = {
             "tipo_busqueda": tipo_lugar,
             "descripcion": tipos_soportados[tipo_lugar],
             "coordenadas_referencia": {"lat": lat, "lon": lon},
@@ -2245,8 +2368,12 @@ def get_recursos_cerca_lugares():
             "lugares_encontrados": len(lugares),
             "lugares": lugares,
             "recursos_cerca": len(recursos_data),
-            "recursos": recursos_data
-        })
+            "recursos": recursos_data,
+            "lugares_fuente": lugares_fuente,
+        }
+        if places_warning:
+            payload["places_warning"] = places_warning
+        return jsonify(payload)
         
     except Exception as e:
         print(f"Error en endpoint /api/recursos-cerca-lugares: {e}")
@@ -2316,30 +2443,23 @@ def get_mobiliario_cerca_lugares():
                 "descripciones": tipos_soportados
             }), 400
 
-        lugares, places_error = buscar_lugares_cerca(lat, lon, tipo_lugar, radio_km)
-
-        if places_error:
-            return jsonify({
-                "error": places_error,
-                "tipo_lugar": tipo_lugar,
-                "descripcion": tipos_soportados[tipo_lugar],
-                "lugares": [],
-                "mobiliario": [],
-            }), 502
+        lugares, places_warning, lugares_fuente = resolver_lugares_cerca(lat, lon, tipo_lugar, radio_km)
 
         if not lugares:
             return jsonify({
+                "error": places_warning or f"No se encontraron {tipos_soportados[tipo_lugar].lower()} en el área",
                 "mensaje": f"No se encontraron {tipos_soportados[tipo_lugar].lower()} en el área especificada",
                 "tipo_lugar": tipo_lugar,
                 "descripcion": tipos_soportados[tipo_lugar],
                 "lugares": [],
                 "mobiliario": [],
                 "mobiliario_cerca": 0,
-            })
+                "lugares_fuente": lugares_fuente,
+            }), 502
 
         mobiliario_data = _mobiliario_cerca_de_lugares(lugares, radio_km)
 
-        return jsonify({
+        payload = {
             "tipo_busqueda": tipo_lugar,
             "descripcion": tipos_soportados[tipo_lugar],
             "coordenadas_referencia": {"lat": lat, "lon": lon},
@@ -2348,7 +2468,11 @@ def get_mobiliario_cerca_lugares():
             "lugares": lugares,
             "mobiliario_cerca": len(mobiliario_data),
             "mobiliario": mobiliario_data,
-        })
+            "lugares_fuente": lugares_fuente,
+        }
+        if places_warning:
+            payload["places_warning"] = places_warning
+        return jsonify(payload)
 
     except Exception as e:
         print(f"Error en endpoint /api/mobiliario-cerca-lugares: {e}")
