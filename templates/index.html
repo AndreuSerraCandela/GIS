@@ -108,9 +108,14 @@
                             </select>
                         </div>
                         <div class="form-group">
-                            <label for="placeRadius">Radio de búsqueda (km) *:</label>
+                            <label for="placeRadius">Radio (km) *:</label>
                             <input type="number" id="placeRadius" class="form-control" value="5" min="0.1" max="50" step="0.1" required>
-                            <small class="form-text text-muted">Obligatorio: entre 0.1 y 50 km</small>
+                            <small class="form-text text-muted">
+                                Un solo radio hoy: (1) buscar comercios alrededor del <strong>centro del mapa</strong>;
+                                (2) mostrar recursos/mobiliario a ese mismo radio del <strong>comercio más cercano</strong>.
+                                En el mapa: <span style="color:#6a1b9a;font-weight:bold">●</span> morado = comercio (banco, panadería…);
+                                🎯 = centro; círculo = zona de referencia.
+                            </small>
                         </div>
                         <button id="searchByPlace" class="btn btn-warning">Buscar comercios + recursos</button>
                         <button id="searchMobiliarioByPlace" class="btn btn-info">Buscar comercios + mobiliario</button>

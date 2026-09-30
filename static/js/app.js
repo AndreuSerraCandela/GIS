@@ -4302,14 +4302,21 @@ function appendLugaresMarkers(data, targetLayer) {
         const distTxt = Number.isFinite(dist) ? dist.toFixed(2) : '?';
         const nombre = lugar.nombre || 'Sin nombre';
 
+        const tipoLabel = data.descripcion || lugar.tipo || 'Comercio';
         const placeMarker = L.circleMarker([lat, lon], {
-            radius: 10,
-            color: '#6a1b9a',
-            weight: 2,
-            fillColor: '#e1bee7',
-            fillOpacity: 0.9,
+            radius: 12,
+            color: '#4a148c',
+            weight: 3,
+            fillColor: '#ce93d8',
+            fillOpacity: 0.95,
         });
         placeMarker.setZIndexOffset(800);
+
+        placeMarker.bindTooltip(`${nombre} (${tipoLabel})`, {
+            direction: 'top',
+            offset: [0, -8],
+            opacity: 0.95,
+        });
 
         placeMarker.bindPopup(`
             <div>
@@ -4458,7 +4465,7 @@ function displaySearchResults(data, searchType, searchParams) {
         showNotification(data.mensaje || 'No se encontraron comercios ni recursos en esa zona.', 'warning', 15000);
     } else {
         showNotification(
-            `✓ ${lugaresCount} comercios${fuenteTxt}, ${recursosCount} recursos cerca`,
+            `✓ ${lugaresCount} comercios${fuenteTxt} (puntos morados en el mapa), ${recursosCount} recursos cerca. Pasa el ratón sobre un morado para ver el nombre.`,
             'success',
             12000
         );
