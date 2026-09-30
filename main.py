@@ -1105,7 +1105,7 @@ app = Flask(__name__)
 CORS(app)
 
 # Incrementar en cada publicación (cache-bust del navegador)
-GIS_APP_BUILD = os.getenv('GIS_APP_BUILD', '20260930-place-search-3')
+GIS_APP_BUILD = os.getenv('GIS_APP_BUILD', '20260930-google-env-hint-4')
 
 app.config['SECRET_KEY'] = Config.SECRET_KEY
 app.config['SESSION_COOKIE_HTTPONLY'] = True
@@ -2751,6 +2751,31 @@ def google_places_diagnostico():
         radio_km = request.args.get('radio', 5, type=float)
         lugares, err = buscar_lugares_cerca(lat, lon, tipo, radio_km)
 
+        project_dir = os.path.dirname(os.path.abspath(__file__))
+        env_path = os.path.join(project_dir, '.env')
+        env_exists = os.path.isfile(env_path)
+        env_var_in_process = bool((os.getenv('GOOGLE_MAPS_API_KEY') or '').strip())
+
+        solucion = None
+        if err and 'REQUEST_DENIED' in str(err):
+            solucion = {
+                "causa": (
+                    "La búsqueda la ejecuta el SERVIDOR (IP 213.96.80.141), no el navegador. "
+                    "Una clave solo con «Referentes HTTP» falla aunque esté en el .env."
+                ),
+                "pasos": [
+                    "Google Cloud → Credenciales → clave dedicada al servidor.",
+                    "Restricción de aplicación: «Direcciones IP» → 213.96.80.141.",
+                    "Restricción de API: Places API + Geocoding API.",
+                    "GOOGLE_MAPS_API_KEY=esa_clave en C:\\inetpub\\wwwroot\\Gis\\.env",
+                    "Reciclar pool IIS «GIS-App».",
+                    "google_key_source debe pasar a «env» y la huella …XXXXXX cambiar si es otra clave.",
+                ],
+                "nota_dos_claves": (
+                    "Otra clave con referrer https://gis.malla.es/* puede quedarse para el JS del mapa."
+                ),
+            }
+
         return jsonify({
             "ok": bool(lugares) and not err,
             "google_key_configured": True,
@@ -2762,12 +2787,19 @@ def google_places_diagnostico():
             "radio_km": radio_km,
             "lugares_encontrados": len(lugares),
             "error": err,
+            "solucion_request_denied": solucion,
             "apis_requeridas": [
                 "Places API",
                 "Geocoding API",
             ],
             "servidor_env": {
-                "GOOGLE_MAPS_API_KEY": "definida" if key_source == "env" else "usa valor del repo (recomendado: .env)",
+                "env_file": env_path,
+                "env_file_exists": env_exists,
+                "GOOGLE_MAPS_API_KEY_en_proceso": env_var_in_process,
+                "google_key_source": key_source,
+                "interpretacion": (
+                    "Si google_key_source es repo_default, el .env no se cargó o la variable está mal nombrada."
+                ),
             },
         })
     except Exception as e:

@@ -20,9 +20,10 @@ if project_dir not in sys.path:
 os.chdir(project_dir)
 
 # Cargar .env del sitio IIS antes de importar main (GOOGLE_MAPS_API_KEY, etc.)
+_env_file = os.path.join(project_dir, ".env")
 try:
     from dotenv import load_dotenv
-    load_dotenv(os.path.join(project_dir, ".env"))
+    load_dotenv(_env_file, override=True)
 except ImportError:
     pass
 
@@ -36,6 +37,9 @@ try:
         f.write(f"Python path: {sys.executable}\n")
         f.write(f"Python version: {sys.version}\n")
         f.write(f"Working directory: {os.getcwd()}\n")
+        f.write(f".env path: {_env_file}\n")
+        f.write(f".env exists: {os.path.isfile(_env_file)}\n")
+        f.write(f"GOOGLE_MAPS_API_KEY in process: {bool((os.getenv('GOOGLE_MAPS_API_KEY') or '').strip())}\n")
 except Exception as e:
     pass  # Si no se puede escribir el log, continuar
 
