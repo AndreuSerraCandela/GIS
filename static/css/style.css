@@ -828,6 +828,25 @@ label[for*="Radius"] {
     font-size: 12px !important;
 }
 
+/* Comercios Google (bancos, panaderías…) — encima de recursos verdes */
+.leaflet-div-icon.place-commerce-marker {
+    background: transparent !important;
+    border: none !important;
+}
+
+.place-commerce-pin {
+    width: 40px;
+    height: 40px;
+    line-height: 34px;
+    text-align: center;
+    font-size: 22px;
+    background: #fff;
+    border: 3px solid #6a1b9a;
+    border-radius: 50%;
+    box-shadow: 0 3px 10px rgba(0, 0, 0, 0.35);
+    pointer-events: auto;
+}
+
 /* Estilos para círculos de radio */
 .radius-circle {
     stroke: #ff5722;

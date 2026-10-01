@@ -790,6 +790,8 @@ let placesLayer = null;
 let radiusCircle = null;
 let currentSearchType = null;
 let currentSearchData = null;
+/** Capas globales ocultas temporalmente mientras hay búsqueda por comercios */
+let globalLayersHiddenForPlaceSearch = { recursos: false, mobiliario: false };
 let currentClickHandler = null;
 let savedLocationbutton = null;
 
@@ -1575,6 +1577,76 @@ async function exportarRecursosExcel() {
 }
 
 
+function appendRecursoFiltersToSearchParams(params) {
+    const tiposRecursoSelect = document.getElementById('tiposRecurso');
+    if (tiposRecursoSelect) {
+        const selectedTipos = Array.from(tiposRecursoSelect.selectedOptions)
+            .map((option) => option.value)
+            .filter((value) => value && String(value).trim() !== '');
+        if (selectedTipos.length > 0) {
+            params.append('tipos_recurso', selectedTipos.join(','));
+        }
+    }
+
+    const empresasSelect = document.getElementById('empresas');
+    if (empresasSelect) {
+        const selectedEmpresas = Array.from(empresasSelect.selectedOptions)
+            .map((option) => option.value)
+            .filter((value) => value && String(value).trim() !== '');
+        if (selectedEmpresas.length > 0) {
+            params.append('empresas', selectedEmpresas.join(','));
+        }
+    }
+
+    const familiasSelect = document.getElementById('familias');
+    if (familiasSelect) {
+        const selectedFamilias = Array.from(familiasSelect.selectedOptions)
+            .map((option) => option.value)
+            .filter((value) => value && String(value).trim() !== '');
+        if (selectedFamilias.length > 0) {
+            params.append('familias', selectedFamilias.join(','));
+        }
+    }
+}
+
+function getRecursoFiltersSummary() {
+    const parts = [];
+    const tiposRecursoSelect = document.getElementById('tiposRecurso');
+    if (tiposRecursoSelect) {
+        const labels = Array.from(tiposRecursoSelect.selectedOptions)
+            .map((o) => o.textContent.trim())
+            .filter(Boolean);
+        if (labels.length) parts.push(`tipo recurso: ${labels.join(', ')}`);
+    }
+    const empresasSelect = document.getElementById('empresas');
+    if (empresasSelect) {
+        const labels = Array.from(empresasSelect.selectedOptions)
+            .map((o) => o.textContent.trim())
+            .filter(Boolean);
+        if (labels.length) parts.push(`empresa: ${labels.join(', ')}`);
+    }
+    const familiasSelect = document.getElementById('familias');
+    if (familiasSelect) {
+        const labels = Array.from(familiasSelect.selectedOptions)
+            .map((o) => o.textContent.trim())
+            .filter(Boolean);
+        if (labels.length) parts.push(`familia: ${labels.join(', ')}`);
+    }
+    if (!parts.length) return '';
+    return ` Filtros activos (${parts.join('; ')}).`;
+}
+
+function urlUsesRecursoFilters(url) {
+    if (url.includes('/api/mobiliario')) return false;
+    return (
+        url.includes('/api/recursos-cerca-')
+        || url.includes('/api/recursos-cerca-lugares')
+        || url.endsWith('/api/recursos')
+        || url.includes('/api/recursos?')
+        || url.includes('/api/recursos-zona')
+    );
+}
+
 // Función auxiliar para añadir fechas y tipos de recurso a las URLs de las APIs
 function addFechasToUrl(url) {
     const fechaDesde = document.getElementById('fechaDesde').value;
@@ -1592,47 +1664,18 @@ function addFechasToUrl(url) {
     if (fechaDesde) params.append('fecha_desde', fechaDesde);
     if (fechaHasta) params.append('fecha_hasta', fechaHasta);
     
-    // Añadir tipos de recurso y empresas seleccionados (solo para APIs de recursos, no mobiliario)
-    if (url.includes('/api/recursos') && !url.includes('/api/mobiliario')) {
-        const tiposRecursoSelect = document.getElementById('tiposRecurso');
-        if (tiposRecursoSelect) {
-            const selectedTipos = Array.from(tiposRecursoSelect.selectedOptions)
-                .map(option => option.value)
-                .filter(value => value); // Filtrar valores vacíos
-            
-            if (selectedTipos.length > 0) {
-                params.append('tipos_recurso', selectedTipos.join(','));
-            }
-        }
-        
-        const empresasSelect = document.getElementById('empresas');
-        if (empresasSelect) {
-            const selectedEmpresas = Array.from(empresasSelect.selectedOptions)
-                .map(option => option.value)
-                .filter(value => value); // Filtrar valores vacíos
-            
-            if (selectedEmpresas.length > 0) {
-                params.append('empresas', selectedEmpresas.join(','));
-            }
-        }
-        
-        const familiasSelect = document.getElementById('familias');
-        if (familiasSelect) {
-            const selectedFamilias = Array.from(familiasSelect.selectedOptions)
-                .map(option => option.value)
-                .filter(value => value); // Filtrar valores vacíos
-            
-            if (selectedFamilias.length > 0) {
-                params.append('familias', selectedFamilias.join(','));
-            }
-        }
+    if (urlUsesRecursoFilters(url)) {
+        appendRecursoFiltersToSearchParams(params);
     }
     
     // Construir nueva URL
     const baseUrl = url.split('?')[0];
     const queryString = params.toString();
-    
-    return queryString ? `${baseUrl}?${queryString}` : baseUrl;
+    const full = queryString ? `${baseUrl}?${queryString}` : baseUrl;
+    if (urlUsesRecursoFilters(url)) {
+        console.log('🔗 Búsqueda recursos (con filtros panel):', full);
+    }
+    return full;
 }
 
 // Cargar empresas disponibles
@@ -1965,6 +2008,12 @@ function initMap() {
     L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
         attribution: '© OpenStreetMap contributors'
     }).addTo(map);
+
+    map.createPane('commercePane');
+    const commercePane = map.getPane('commercePane');
+    if (commercePane) {
+        commercePane.style.zIndex = 650;
+    }
     
     initIncidenciasPopupDelegation();
     initMobilePopupSheet();
@@ -2855,41 +2904,7 @@ async function loadRecursos() {
         if (fechaDesde) params.append('fecha_desde', fechaDesde);
         if (fechaHasta) params.append('fecha_hasta', fechaHasta);
         
-        // Añadir tipos de recurso seleccionados
-        const tiposRecursoSelect = document.getElementById('tiposRecurso');
-        if (tiposRecursoSelect) {
-            const selectedTipos = Array.from(tiposRecursoSelect.selectedOptions)
-                .map(option => option.value)
-                .filter(value => value && value.trim() !== '');
-            if (selectedTipos.length > 0) {
-                params.append('tipos_recurso', selectedTipos.join(','));
-                console.log(`📋 Filtro tipos de recurso: ${selectedTipos.join(', ')}`);
-            }
-        }
-        
-        // Añadir empresas seleccionadas
-        const empresasSelect = document.getElementById('empresas');
-        if (empresasSelect) {
-            const selectedEmpresas = Array.from(empresasSelect.selectedOptions)
-                .map(option => option.value)
-                .filter(value => value && value.trim() !== '');
-            if (selectedEmpresas.length > 0) {
-                params.append('empresas', selectedEmpresas.join(','));
-                console.log(`🏢 Filtro empresas: ${selectedEmpresas.join(', ')}`);
-            }
-        }
-        
-        // Añadir familias seleccionadas
-        const familiasSelect = document.getElementById('familias');
-        if (familiasSelect) {
-            const selectedFamilias = Array.from(familiasSelect.selectedOptions)
-                .map(option => option.value)
-                .filter(value => value && value.trim() !== '');
-            if (selectedFamilias.length > 0) {
-                params.append('familias', selectedFamilias.join(','));
-                console.log(`👨‍👩‍👧 Filtro familias: ${selectedFamilias.join(', ')}`);
-            }
-        }
+        appendRecursoFiltersToSearchParams(params);
         
         if (params.toString()) {
             url += '?' + params.toString();
@@ -4290,8 +4305,29 @@ function clearCoordinates() {
     showNotification('Coordenadas limpiadas', 'info');
 }
 
+function iconoComercioPorTipo(tipoLugar) {
+    const icons = {
+        bank: '🏦',
+        bakery: '🥖',
+        pharmacy: '💊',
+        gas_station: '⛽',
+        supermarket: '🛒',
+        restaurant: '🍽️',
+        cafe: '☕',
+        hospital: '🏥',
+        school: '🏫',
+        atm: '🏧',
+        bar: '🍺',
+        gym: '💪',
+        parking: '🅿️',
+    };
+    return icons[tipoLugar] || '🏪';
+}
+
 function appendLugaresMarkers(data, targetLayer) {
     if (!data.lugares || data.lugares.length === 0) return;
+
+    const tipoBusqueda = data.tipo_busqueda || (data.lugares[0] && data.lugares[0].tipo) || '';
 
     data.lugares.forEach((lugar) => {
         const lat = Number(lugar.lat);
@@ -4301,35 +4337,114 @@ function appendLugaresMarkers(data, targetLayer) {
         const dist = Number(lugar.distancia_km);
         const distTxt = Number.isFinite(dist) ? dist.toFixed(2) : '?';
         const nombre = lugar.nombre || 'Sin nombre';
-
         const tipoLabel = data.descripcion || lugar.tipo || 'Comercio';
-        const placeMarker = L.circleMarker([lat, lon], {
-            radius: 12,
+        const emoji = iconoComercioPorTipo(lugar.tipo || tipoBusqueda);
+        const safeNombre = String(nombre).replace(/"/g, '&quot;');
+
+        const icon = L.divIcon({
+            className: 'place-commerce-marker',
+            html: `<div class="place-commerce-pin" aria-label="${safeNombre}">${emoji}</div>`,
+            iconSize: [40, 40],
+            iconAnchor: [20, 20],
+        });
+
+        const commerceGroup = L.layerGroup();
+        const halo = L.circleMarker([lat, lon], {
+            pane: 'commercePane',
+            radius: 16,
             color: '#4a148c',
-            weight: 3,
+            weight: 4,
             fillColor: '#ce93d8',
-            fillOpacity: 0.95,
-        });
-        placeMarker.setZIndexOffset(800);
-
-        placeMarker.bindTooltip(`${nombre} (${tipoLabel})`, {
-            direction: 'top',
-            offset: [0, -8],
-            opacity: 0.95,
+            fillOpacity: 0.92,
         });
 
-        placeMarker.bindPopup(`
+        const placeMarker = L.marker([lat, lon], {
+            icon,
+            pane: 'commercePane',
+            zIndexOffset: 2500,
+            riseOnHover: true,
+            riseOffset: 400,
+        });
+
+        const popupHtml = `
             <div>
-                <h4>${nombre}</h4>
-                <p><strong>Tipo:</strong> ${data.descripcion || lugar.tipo || ''}</p>
+                <h4>${emoji} ${nombre}</h4>
+                <p><strong>Tipo:</strong> ${tipoLabel}</p>
                 <p><strong>Dirección:</strong> ${lugar.vicinity || 'No disponible'}</p>
                 <p><strong>Rating:</strong> ${lugar.rating || 'N/A'}</p>
                 <p><strong>Distancia al centro:</strong> ${distTxt} km</p>
                 ${lugar.fuente ? `<p><strong>Origen:</strong> ${lugar.fuente === 'osm' ? 'OpenStreetMap' : 'Google'}</p>` : ''}
             </div>
-        `);
-        targetLayer.addLayer(placeMarker);
+        `;
+        const tooltipHtml = `<strong>${tipoLabel}</strong><br>${nombre}`;
+
+        halo.bindTooltip(tooltipHtml, { direction: 'top', offset: [0, -8], opacity: 0.95 });
+        halo.bindPopup(popupHtml);
+        placeMarker.bindTooltip(tooltipHtml, { direction: 'top', offset: [0, -22], opacity: 0.95 });
+        placeMarker.bindPopup(popupHtml);
+
+        commerceGroup.addLayer(halo);
+        commerceGroup.addLayer(placeMarker);
+        targetLayer.addLayer(commerceGroup);
     });
+}
+
+function bringPlacesLayerToFront() {
+    if (!placesLayer || !map) return;
+    placesLayer.eachLayer((layer) => {
+        if (typeof layer.bringToFront === 'function') {
+            layer.bringToFront();
+        }
+    });
+}
+
+function hideGlobalLayersForPlaceSearch() {
+    globalLayersHiddenForPlaceSearch = { recursos: false, mobiliario: false };
+    if (!map) return;
+    if (recursosLayer && map.hasLayer(recursosLayer)) {
+        map.removeLayer(recursosLayer);
+        globalLayersHiddenForPlaceSearch.recursos = true;
+    }
+    if (mobiliarioLayer && map.hasLayer(mobiliarioLayer)) {
+        map.removeLayer(mobiliarioLayer);
+        globalLayersHiddenForPlaceSearch.mobiliario = true;
+    }
+}
+
+function restoreGlobalLayersAfterPlaceSearch() {
+    if (!map) return;
+    if (globalLayersHiddenForPlaceSearch.recursos && recursosLayer && !map.hasLayer(recursosLayer)) {
+        map.addLayer(recursosLayer);
+    }
+    if (globalLayersHiddenForPlaceSearch.mobiliario && mobiliarioLayer && !map.hasLayer(mobiliarioLayer)) {
+        map.addLayer(mobiliarioLayer);
+    }
+    globalLayersHiddenForPlaceSearch = { recursos: false, mobiliario: false };
+}
+
+function fitMapToCommerceSearch(data, searchParams) {
+    const { lat, lon } = searchParams;
+    const lugares = data.lugares || [];
+    if (!map || !Number.isFinite(lat) || !Number.isFinite(lon)) return;
+
+    try {
+        if (lugares.length > 0 && placesLayer) {
+            const placeMarkers = placesLayer.getLayers();
+            if (placeMarkers.length > 0) {
+                const group = L.featureGroup(placeMarkers);
+                const bounds = group.getBounds();
+                bounds.extend([lat, lon]);
+                if (bounds.isValid && bounds.isValid()) {
+                    map.fitBounds(bounds.pad(0.12), { maxZoom: 16 });
+                    return;
+                }
+            }
+        }
+        map.setView([lat, lon], 14);
+    } catch (err) {
+        console.warn('Error ajustando vista a comercios:', err);
+        map.setView([lat, lon], 14);
+    }
 }
 
 // Mostrar resultados de búsqueda en el mapa
@@ -4342,6 +4457,10 @@ function displaySearchResults(data, searchType, searchParams) {
     // Limpiar búsquedas anteriores
     clearSearchResults();
     console.log('✅ Búsquedas anteriores limpiadas');
+
+    if (searchType === 'place') {
+        hideGlobalLayersForPlaceSearch();
+    }
     
     currentSearchData = data;
     currentSearchType = searchType;
@@ -4414,9 +4533,7 @@ function displaySearchResults(data, searchType, searchParams) {
     searchLayer.addTo(map);
     if (placesLayer.getLayers().length > 0) {
         placesLayer.addTo(map);
-        if (typeof placesLayer.bringToFront === 'function') {
-            placesLayer.bringToFront();
-        }
+        bringPlacesLayerToFront();
     }
     if (typeof map !== 'undefined' && map && map.invalidateSize) {
         map.invalidateSize();
@@ -4433,7 +4550,9 @@ function displaySearchResults(data, searchType, searchParams) {
         allLayers.push(placesLayer);
     }
     
-    if (allLayers.length > 0) {
+    if (searchType === 'place' && data.lugares && data.lugares.length > 0) {
+        fitMapToCommerceSearch(data, searchParams);
+    } else if (allLayers.length > 0) {
         const group = new L.featureGroup(allLayers);
         if (group.getLayers().length > 0) {
             try {
@@ -4443,14 +4562,13 @@ function displaySearchResults(data, searchType, searchParams) {
                 }
             } catch (error) {
                 console.warn('Error ajustando vista del mapa:', error);
-                // Si hay error, centrar en el punto de búsqueda
                 map.setView([lat, lon], 13);
             }
         }
     } else {
-        // Si no hay capas, centrar en el punto de búsqueda
         map.setView([lat, lon], 13);
     }
+    bringPlacesLayerToFront();
     
     // Mostrar resumen
     const lugaresCount = data.lugares ? data.lugares.length : 0;
@@ -4464,10 +4582,15 @@ function displaySearchResults(data, searchType, searchParams) {
     if (lugaresCount === 0 && recursosCount === 0) {
         showNotification(data.mensaje || 'No se encontraron comercios ni recursos en esa zona.', 'warning', 15000);
     } else {
+        const tipoNom = data.descripcion || 'Comercios';
+        const ocultoGlobal = globalLayersHiddenForPlaceSearch.recursos || globalLayersHiddenForPlaceSearch.mobiliario;
+        const capaTxt = ocultoGlobal
+            ? ' Se ocultó la capa global de recursos/mobiliario para ver los comercios.'
+            : '';
         showNotification(
-            `✓ ${lugaresCount} comercios${fuenteTxt} (puntos morados en el mapa), ${recursosCount} recursos cerca. Pasa el ratón sobre un morado para ver el nombre.`,
+            `✓ ${lugaresCount} ${tipoNom}${fuenteTxt} (círculo morado + 🏦) · ${recursosCount} recursos cerca.${getRecursoFiltersSummary()}${capaTxt}`,
             'success',
-            12000
+            14000
         );
     }
     console.log('✅ Resumen mostrado');
@@ -4477,6 +4600,7 @@ function displaySearchResults(data, searchType, searchParams) {
 
 function displayMobiliarioSearchResults(data, searchType, searchParams) {
     clearSearchResults();
+    hideGlobalLayersForPlaceSearch();
 
     currentSearchData = data;
     currentSearchType = `mobiliario_${searchType}`;
@@ -4530,26 +4654,32 @@ function displayMobiliarioSearchResults(data, searchType, searchParams) {
     searchLayer.addTo(map);
     if (placesLayer.getLayers().length > 0) {
         placesLayer.addTo(map);
+        bringPlacesLayerToFront();
     }
 
     const allLayers = [searchLayer];
     if (placesLayer.getLayers().length > 0) {
         allLayers.push(placesLayer);
     }
-    const group = new L.featureGroup(allLayers);
-    if (group.getLayers().length > 0) {
-        try {
-            const bounds = group.getBounds();
-            if (bounds && bounds.isValid && bounds.isValid()) {
-                map.fitBounds(bounds.pad(0.1));
+    if (data.lugares && data.lugares.length > 0) {
+        fitMapToCommerceSearch(data, searchParams);
+    } else {
+        const group = new L.featureGroup(allLayers);
+        if (group.getLayers().length > 0) {
+            try {
+                const bounds = group.getBounds();
+                if (bounds && bounds.isValid && bounds.isValid()) {
+                    map.fitBounds(bounds.pad(0.1));
+                }
+            } catch (error) {
+                console.warn('Error ajustando vista del mapa:', error);
+                map.setView([lat, lon], 13);
             }
-        } catch (error) {
-            console.warn('Error ajustando vista del mapa:', error);
+        } else {
             map.setView([lat, lon], 13);
         }
-    } else {
-        map.setView([lat, lon], 13);
     }
+    bringPlacesLayerToFront();
 
     const lugaresCount = data.lugares ? data.lugares.length : 0;
     if (lugaresCount === 0 && mobiliario.length === 0 && data.mensaje) {
@@ -4595,6 +4725,7 @@ function clearSearchResults() {
     }
     currentSearchData = null;
     currentSearchType = null;
+    restoreGlobalLayersAfterPlaceSearch();
     
     console.log('✅ Resultados de búsqueda limpiados completamente');
 }
