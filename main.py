@@ -215,6 +215,38 @@ def calcular_distancia_haversine(lat1, lon1, lat2, lon2):
     
     return R * c
 
+
+def _normalizar_radio_km(radio_km, nombre_param):
+    try:
+        r = float(radio_km)
+    except (TypeError, ValueError):
+        raise ValueError(f'{nombre_param} no es un número válido')
+    if r < 0.1 or r > 50:
+        raise ValueError(f'{nombre_param} debe estar entre 0.1 y 50 km')
+    return r
+
+
+def radios_busqueda_por_lugar_desde_request():
+    """
+    radio_lugares: búsqueda Google Places alrededor del centro.
+    radio_recursos: distancia máxima recurso/mobiliario ↔ comercio más cercano.
+    `radio` (legacy) aplica a ambos si no se envían los específicos.
+    """
+    radio_legacy = request.args.get('radio', type=float)
+    radio_lugares = request.args.get('radio_lugares', type=float)
+    radio_recursos = request.args.get('radio_recursos', type=float)
+    rl = radio_lugares if radio_lugares is not None else radio_legacy
+    rr = radio_recursos if radio_recursos is not None else radio_legacy
+    if rl is None:
+        rl = 5.0
+    if rr is None:
+        rr = 0.5
+    return (
+        _normalizar_radio_km(rl, 'radio_lugares'),
+        _normalizar_radio_km(rr, 'radio_recursos'),
+    )
+
+
 def buscar_lugares_cerca(lat, lon, tipo_lugar, radio_km=5):
     """
     Busca lugares específicos cerca de unas coordenadas usando Google Places API
@@ -1105,7 +1137,7 @@ app = Flask(__name__)
 CORS(app)
 
 # Incrementar en cada publicación (cache-bust del navegador)
-GIS_APP_BUILD = os.getenv('GIS_APP_BUILD', '20261001-instructions-panel-9')
+GIS_APP_BUILD = os.getenv('GIS_APP_BUILD', '20261001-dual-radius-10')
 
 app.config['SECRET_KEY'] = Config.SECRET_KEY
 app.config['SESSION_COOKIE_HTTPONLY'] = True
@@ -2272,13 +2304,17 @@ def get_recursos_cerca_lugares():
         lat = request.args.get('lat', type=float)
         lon = request.args.get('lon', type=float)
         tipo_lugar = request.args.get('tipo_lugar')
-        radio_km = request.args.get('radio', 5, type=float)
-        
+
         if lat is None or lon is None:
             return jsonify({"error": "Se requieren parámetros lat y lon"}), 400
         
         if not tipo_lugar:
             return jsonify({"error": "Se requiere el parámetro tipo_lugar"}), 400
+
+        try:
+            radio_lugares_km, radio_recursos_km = radios_busqueda_por_lugar_desde_request()
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
         
         # Validar que el tipo de lugar sea soportado
         tipos_soportados = obtener_tipos_lugares_soportados()
@@ -2289,7 +2325,9 @@ def get_recursos_cerca_lugares():
                 "descripciones": tipos_soportados
             }), 400
         
-        lugares, places_warning, lugares_fuente = resolver_lugares_cerca(lat, lon, tipo_lugar, radio_km)
+        lugares, places_warning, lugares_fuente = resolver_lugares_cerca(
+            lat, lon, tipo_lugar, radio_lugares_km
+        )
 
         if not lugares:
             return jsonify({
@@ -2375,7 +2413,7 @@ def get_recursos_cerca_lugares():
             # Encontrar el lugar más cercano
             lugar_mas_cercano = min(distancias_lugares, key=lambda x: x['distancia_km'])
             
-            if lugar_mas_cercano['distancia_km'] <= radio_km:
+            if lugar_mas_cercano['distancia_km'] <= radio_recursos_km:
                 recurso['lugar_mas_cercano'] = lugar_mas_cercano
                 recurso['distancia_a_lugar_km'] = lugar_mas_cercano['distancia_km']
                 recursos_data.append(recurso)
@@ -2390,7 +2428,9 @@ def get_recursos_cerca_lugares():
             "tipo_busqueda": tipo_lugar,
             "descripcion": tipos_soportados[tipo_lugar],
             "coordenadas_referencia": {"lat": lat, "lon": lon},
-            "radio_km": radio_km,
+            "radio_km": radio_lugares_km,
+            "radio_lugares_km": radio_lugares_km,
+            "radio_recursos_km": radio_recursos_km,
             "lugares_encontrados": len(lugares),
             "lugares": lugares,
             "recursos_cerca": len(recursos_data),
@@ -2454,12 +2494,16 @@ def get_mobiliario_cerca_lugares():
         lat = request.args.get('lat', type=float)
         lon = request.args.get('lon', type=float)
         tipo_lugar = request.args.get('tipo_lugar')
-        radio_km = request.args.get('radio', 5, type=float)
 
         if lat is None or lon is None:
             return jsonify({"error": "Se requieren parámetros lat y lon"}), 400
         if not tipo_lugar:
             return jsonify({"error": "Se requiere el parámetro tipo_lugar"}), 400
+
+        try:
+            radio_lugares_km, radio_recursos_km = radios_busqueda_por_lugar_desde_request()
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
 
         tipos_soportados = obtener_tipos_lugares_soportados()
         if tipo_lugar not in tipos_soportados:
@@ -2469,7 +2513,9 @@ def get_mobiliario_cerca_lugares():
                 "descripciones": tipos_soportados
             }), 400
 
-        lugares, places_warning, lugares_fuente = resolver_lugares_cerca(lat, lon, tipo_lugar, radio_km)
+        lugares, places_warning, lugares_fuente = resolver_lugares_cerca(
+            lat, lon, tipo_lugar, radio_lugares_km
+        )
 
         if not lugares:
             return jsonify({
@@ -2483,13 +2529,15 @@ def get_mobiliario_cerca_lugares():
                 "lugares_fuente": lugares_fuente,
             }), 502
 
-        mobiliario_data = _mobiliario_cerca_de_lugares(lugares, radio_km)
+        mobiliario_data = _mobiliario_cerca_de_lugares(lugares, radio_recursos_km)
 
         payload = {
             "tipo_busqueda": tipo_lugar,
             "descripcion": tipos_soportados[tipo_lugar],
             "coordenadas_referencia": {"lat": lat, "lon": lon},
-            "radio_km": radio_km,
+            "radio_km": radio_lugares_km,
+            "radio_lugares_km": radio_lugares_km,
+            "radio_recursos_km": radio_recursos_km,
             "lugares_encontrados": len(lugares),
             "lugares": lugares,
             "mobiliario_cerca": len(mobiliario_data),

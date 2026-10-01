@@ -1612,6 +1612,33 @@ function appendRecursoFiltersToSearchParams(params) {
     }
 }
 
+function getPlaceSearchRadii() {
+    const radioLugares = parseFloat(document.getElementById('placeRadiusCommerce')?.value);
+    const radioRecursos = parseFloat(document.getElementById('placeRadiusProximity')?.value);
+    return { radioLugares, radioRecursos };
+}
+
+function validatePlaceSearchRadii(radii) {
+    const checks = [
+        ['comercios', radii.radioLugares],
+        ['proximidad de recursos', radii.radioRecursos],
+    ];
+    for (const [label, value] of checks) {
+        if (!Number.isFinite(value) || value <= 0 || value > 50) {
+            showNotification(`Radio de ${label}: introduce un valor entre 0.1 y 50 km`, 'error');
+            return false;
+        }
+    }
+    return true;
+}
+
+function placeSearchRadiosQueryString(radii) {
+    const params = new URLSearchParams();
+    params.set('radio_lugares', String(radii.radioLugares));
+    params.set('radio_recursos', String(radii.radioRecursos));
+    return params.toString();
+}
+
 function getRecursoFiltersSummary() {
     const parts = [];
     const tiposRecursoSelect = document.getElementById('tiposRecurso');
@@ -3437,10 +3464,10 @@ async function searchByPlace() {
     console.log('🔍 Buscando recursos cerca de un tipo de lugar...');
     
     const placeType = document.getElementById('placeType').value;
-    const radius = parseFloat(document.getElementById('placeRadius').value);
+    const radii = getPlaceSearchRadii();
     
     console.log('📍 Tipo de lugar:', placeType);
-    console.log('📍 Radio:', radius);
+    console.log('📍 Radios:', radii);
     
     if (!placeType) {
         console.log('❌ No hay tipo de lugar seleccionado');
@@ -3448,9 +3475,7 @@ async function searchByPlace() {
         return;
     }
     
-    if (!radius || radius <= 0 || radius > 50) {
-        console.log('❌ Radio inválido');
-        showNotification('Por favor introduce un radio válido entre 0.1 y 50 km', 'error');
+    if (!validatePlaceSearchRadii(radii)) {
         return;
     }
     
@@ -3464,7 +3489,10 @@ async function searchByPlace() {
 
     try {
         const label = getSelectedPlaceTypeLabel() || placeType;
-        showNotification(`Buscando ${label} en el centro del mapa (radio ${radius} km)...`, 'info');
+        showNotification(
+            `Buscando ${label}: comercios ${radii.radioLugares} km · recursos ≤${radii.radioRecursos} km de cada comercio…`,
+            'info'
+        );
         await performPlaceSearch(center.lat, center.lon);
     } catch (error) {
         console.error('❌ Error en búsqueda por lugar:', error);
@@ -3474,14 +3502,13 @@ async function searchByPlace() {
 
 function startPlaceSearchMapPick(mode = 'recursos') {
     const placeType = document.getElementById('placeType').value;
-    const radius = parseFloat(document.getElementById('placeRadius').value);
+    const radii = getPlaceSearchRadii();
 
     if (!placeType) {
         showNotification('Por favor selecciona un tipo de lugar', 'error');
         return;
     }
-    if (!radius || radius <= 0 || radius > 50) {
-        showNotification('Por favor introduce un radio válido entre 0.1 y 50 km', 'error');
+    if (!validatePlaceSearchRadii(radii)) {
         return;
     }
 
@@ -3667,15 +3694,14 @@ async function searchMobiliarioNearPoint(lat, lon, radius, searchType, extraPara
 
 async function searchMobiliarioByPlace() {
     const placeType = document.getElementById('placeType').value;
-    const radius = parseFloat(document.getElementById('placeRadius').value);
+    const radii = getPlaceSearchRadii();
 
     if (!placeType) {
         showNotification('Por favor selecciona un tipo de lugar', 'error');
         return;
     }
 
-    if (!radius || radius <= 0 || radius > 50) {
-        showNotification('Por favor introduce un radio válido entre 0.1 y 50 km', 'error');
+    if (!validatePlaceSearchRadii(radii)) {
         return;
     }
 
@@ -3699,18 +3725,24 @@ async function searchMobiliarioByPlace() {
 async function performMobiliarioPlaceSearch(lat, lon) {
     try {
     const placeType = document.getElementById('placeType').value;
-    const radius = parseFloat(document.getElementById('placeRadius').value);
+    const radii = getPlaceSearchRadii();
 
     if (!placeType) {
         showNotification('Por favor selecciona un tipo de lugar', 'error');
         return;
     }
+    if (!validatePlaceSearchRadii(radii)) {
+        return;
+    }
 
     const label = getSelectedPlaceTypeLabel() || placeType;
-    showNotification(`Buscando ${label} y mobiliario en un radio de ${radius} km...`, 'info');
+    showNotification(
+        `Buscando ${label} (${radii.radioLugares} km) y mobiliario ≤${radii.radioRecursos} km de cada comercio…`,
+        'info'
+    );
 
     const url = addFechasToUrl(
-        `/api/mobiliario-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=${encodeURIComponent(placeType)}&radio=${radius}`
+        `/api/mobiliario-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=${encodeURIComponent(placeType)}&${placeSearchRadiosQueryString(radii)}`
     );
     const raw = await fetchGisJson(url);
     const data = await ensurePlaceTypeSearchPayload(raw, lat, lon, placeType);
@@ -3719,7 +3751,7 @@ async function performMobiliarioPlaceSearch(lat, lon) {
         showNotification(data.places_warning, 'warning', 12000);
     }
 
-    displayMobiliarioSearchResults(data, 'place', { lat, lon, radius });
+    displayMobiliarioSearchResults(data, 'place', { lat, lon, ...radii });
     } catch (error) {
         console.error('Error en performMobiliarioPlaceSearch:', error);
         clearSearchResults();
@@ -4185,24 +4217,26 @@ function useSavedLocationForSearch() {
 // Realizar búsqueda por lugar con coordenadas específicas
 async function performPlaceSearch(lat, lon) {
     const placeType = document.getElementById('placeType').value;
-    const radius = parseFloat(document.getElementById('placeRadius').value);
+    const radii = getPlaceSearchRadii();
     
     if (!placeType) {
         showNotification('Por favor selecciona un tipo de lugar', 'error');
         return;
     }
     
-    if (!radius || radius <= 0 || radius > 50) {
-        showNotification('Por favor introduce un radio válido entre 0.1 y 50 km', 'error');
+    if (!validatePlaceSearchRadii(radii)) {
         return;
     }
     
     try {
         const label = getSelectedPlaceTypeLabel() || placeType;
-        showNotification(`Buscando ${label} en un radio de ${radius} km...`, 'info');
+        showNotification(
+            `Buscando ${label}: comercios ${radii.radioLugares} km · recursos ≤${radii.radioRecursos} km de cada comercio…`,
+            'info'
+        );
         
         const url = addFechasToUrl(
-            `/api/recursos-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=${encodeURIComponent(placeType)}&radio=${radius}`
+            `/api/recursos-cerca-lugares?lat=${lat}&lon=${lon}&tipo_lugar=${encodeURIComponent(placeType)}&${placeSearchRadiosQueryString(radii)}`
         );
         const raw = await fetchGisJson(url);
         const data = await ensurePlaceTypeSearchPayload(raw, lat, lon, placeType);
@@ -4211,7 +4245,7 @@ async function performPlaceSearch(lat, lon) {
             showNotification(data.places_warning, 'warning', 12000);
         }
 
-        displaySearchResults(data, 'place', { lat, lon, radius });
+        displaySearchResults(data, 'place', { lat, lon, ...radii });
         
     } catch (error) {
         console.error('Error en búsqueda por lugar:', error);
@@ -4392,6 +4426,36 @@ function appendLugaresMarkers(data, targetLayer) {
     });
 }
 
+function appendCommerceProximityRings(lugares, radioKm, targetLayer) {
+    if (!lugares?.length || !Number.isFinite(radioKm) || radioKm <= 0 || !targetLayer) return;
+    const maxRings = 50;
+    lugares.slice(0, maxRings).forEach((lugar) => {
+        const lat = Number(lugar.lat);
+        const lon = Number(lugar.lon);
+        if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+        L.circle([lat, lon], {
+            pane: 'commercePane',
+            radius: radioKm * 1000,
+            color: '#6a1b9a',
+            weight: 1,
+            dashArray: '3, 6',
+            fill: false,
+            opacity: 0.4,
+            interactive: false,
+        }).addTo(targetLayer);
+    });
+}
+
+function resolvePlaceSearchRadii(searchParams, data) {
+    const radioLugares = Number(
+        searchParams.radioLugares ?? data?.radio_lugares_km ?? searchParams.radius ?? data?.radio_km ?? 5
+    );
+    const radioRecursos = Number(
+        searchParams.radioRecursos ?? data?.radio_recursos_km ?? searchParams.radius ?? data?.radio_km ?? 0.5
+    );
+    return { radioLugares, radioRecursos };
+}
+
 function bringPlacesLayerToFront() {
     if (!placesLayer || !map) return;
     placesLayer.eachLayer((layer) => {
@@ -4475,8 +4539,10 @@ function displaySearchResults(data, searchType, searchParams) {
     console.log('✅ Capas de resultados creadas');
     
     const { lat, lon, radius } = searchParams;
+    const placeRadii = searchType === 'place' ? resolvePlaceSearchRadii(searchParams, data) : null;
+    const circleRadiusKm = searchType === 'place' ? placeRadii.radioLugares : radius;
     console.log('📍 Coordenadas de búsqueda:', lat, lon);
-    console.log('📍 Radio:', radius);
+    console.log('📍 Radio visual:', circleRadiusKm, placeRadii || radius);
     
     // Agregar marcador del punto de búsqueda
     const searchIcon = L.divIcon({
@@ -4487,12 +4553,16 @@ function displaySearchResults(data, searchType, searchParams) {
     });
     
     const searchMarker = L.marker([lat, lon], { icon: searchIcon });
+    const radioPopupExtra = searchType === 'place' && placeRadii
+        ? `<p><strong>Radio comercios:</strong> ${placeRadii.radioLugares} km</p>
+            <p><strong>Proximidad recursos:</strong> ≤ ${placeRadii.radioRecursos} km del comercio más cercano</p>`
+        : `<p><strong>Radio:</strong> ${radius} km</p>`;
     searchMarker.bindPopup(`
         <div style="text-align: center;">
             <h4>🎯 Punto de Búsqueda</h4>
             <p><strong>Tipo:</strong> ${searchType === 'place' ? (data.descripcion || 'Lugar') : searchType === 'coordinates' ? 'Coordenadas' : 'Dirección'}</p>
             <p><strong>Coordenadas:</strong> ${lat.toFixed(6)}, ${lon.toFixed(6)}</p>
-            <p><strong>Radio:</strong> ${radius} km</p>
+            ${radioPopupExtra}
             ${searchParams.address ? `<p><strong>Dirección:</strong> ${searchParams.address}</p>` : ''}
         </div>
     `);
@@ -4500,7 +4570,7 @@ function displaySearchResults(data, searchType, searchParams) {
     
     // Agregar círculo de radio
     radiusCircle = L.circle([lat, lon], {
-        radius: radius * 1000, // Convertir km a metros
+        radius: circleRadiusKm * 1000, // Convertir km a metros
         color: '#ff5722',
         weight: 2,
         dashArray: '5, 5',
@@ -4512,6 +4582,9 @@ function displaySearchResults(data, searchType, searchParams) {
     
     try {
         appendLugaresMarkers(data, placesLayer);
+        if (searchType === 'place' && placeRadii && data.lugares?.length) {
+            appendCommerceProximityRings(data.lugares, placeRadii.radioRecursos, placesLayer);
+        }
     } catch (markerError) {
         console.error('Error pintando lugares en el mapa:', markerError);
         showNotification('Error mostrando comercios en el mapa: ' + markerError.message, 'error');
@@ -4590,8 +4663,11 @@ function displaySearchResults(data, searchType, searchParams) {
         const capaTxt = ocultoGlobal
             ? ' Se ocultó la capa global de recursos/mobiliario para ver los comercios.'
             : '';
+        const radiiTxt = placeRadii
+            ? ` Comercios ${placeRadii.radioLugares} km · recursos ≤${placeRadii.radioRecursos} km.`
+            : '';
         showNotification(
-            `✓ ${lugaresCount} ${tipoNom}${fuenteTxt} (círculo morado + 🏦) · ${recursosCount} recursos cerca.${getRecursoFiltersSummary()}${capaTxt}`,
+            `✓ ${lugaresCount} ${tipoNom}${fuenteTxt} · ${recursosCount} recursos cerca.${radiiTxt}${getRecursoFiltersSummary()}${capaTxt}`,
             'success',
             14000
         );
@@ -4611,6 +4687,8 @@ function displayMobiliarioSearchResults(data, searchType, searchParams) {
     placesLayer = L.layerGroup();
 
     const { lat, lon, radius } = searchParams;
+    const placeRadii = searchType === 'place' ? resolvePlaceSearchRadii(searchParams, data) : null;
+    const circleRadiusKm = searchType === 'place' ? placeRadii.radioLugares : radius;
 
     const searchIcon = L.divIcon({
         className: 'search-marker',
@@ -4623,19 +4701,23 @@ function displayMobiliarioSearchResults(data, searchType, searchParams) {
         ? (data.descripcion || 'Lugar')
         : searchType === 'coordinates' ? 'Coordenadas' : 'Dirección';
     const searchMarker = L.marker([lat, lon], { icon: searchIcon });
+    const radioMobPopup = searchType === 'place' && placeRadii
+        ? `<p><strong>Radio comercios:</strong> ${placeRadii.radioLugares} km</p>
+            <p><strong>Proximidad mobiliario:</strong> ≤ ${placeRadii.radioRecursos} km</p>`
+        : `<p><strong>Radio:</strong> ${radius} km</p>`;
     searchMarker.bindPopup(`
         <div style="text-align: center;">
             <h4>🎯 Punto de Búsqueda (Mobiliario)</h4>
             <p><strong>Tipo:</strong> ${tipoLabel}</p>
             <p><strong>Coordenadas:</strong> ${lat.toFixed(6)}, ${lon.toFixed(6)}</p>
-            <p><strong>Radio:</strong> ${radius} km</p>
+            ${radioMobPopup}
             ${searchParams.address ? `<p><strong>Dirección:</strong> ${searchParams.address}</p>` : ''}
         </div>
     `);
     searchLayer.addLayer(searchMarker);
 
     radiusCircle = L.circle([lat, lon], {
-        radius: radius * 1000,
+        radius: circleRadiusKm * 1000,
         color: '#2196f3',
         weight: 2,
         dashArray: '5, 5',
@@ -4646,6 +4728,9 @@ function displayMobiliarioSearchResults(data, searchType, searchParams) {
     searchLayer.addLayer(radiusCircle);
 
     appendLugaresMarkers(data, placesLayer);
+    if (searchType === 'place' && placeRadii && data.lugares?.length) {
+        appendCommerceProximityRings(data.lugares, placeRadii.radioRecursos, placesLayer);
+    }
 
     const mobiliario = data.mobiliario || [];
     mobiliario.forEach((item) => {

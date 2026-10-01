@@ -106,7 +106,7 @@
                         <div id="instructionsContent" class="instructions-panel" hidden>
                             <ul>
                                 <li><strong>Comercios (bancos, farmacias…):</strong> Centra el mapa, elige tipo y radio, pulsa <em>Buscar comercios + recursos</em>. Los comercios de Google se muestran como <span style="color:#6a1b9a;font-weight:bold">círculo morado + icono 🏦</span>; los recursos del GIS son círculos verdes/naranjas. 🎯 = centro; círculo discontinuo = radio.</li>
-                                <li><strong>Un solo radio (por ahora):</strong> (1) comercios alrededor del <strong>centro del mapa</strong>; (2) recursos/mobiliario dentro del mismo radio respecto al <strong>comercio más cercano</strong> a cada recurso.</li>
+                                <li><strong>Dos radios:</strong> (1) <em>Radio comercios</em> — farmacias, bancos, etc. alrededor del <strong>centro del mapa</strong>; (2) <em>Radio proximidad</em> — recursos o mobiliario a menos de esa distancia del <strong>comercio más cercano</strong> (anillos discontinuos morados en cada comercio).</li>
                                 <li><strong>Filtros del panel</strong> (tipo de recurso, empresa, familia, fechas) aplican a la parte de <strong>recursos</strong>, no a Google Places.</li>
                                 <li><strong>¿Dónde buscar?</strong> Centra el mapa y pulsa buscar, o usa el botón para marcar el punto o la ubicación GPS.</li>
                                 <li><strong>Tipo de lugar:</strong> Selecciona el tipo y pulsa buscar (elegir tipo solo no dibuja nada en el mapa).</li>
@@ -128,9 +128,15 @@
                                 <option value="">Seleccionar tipo...</option>
                             </select>
                         </div>
-                        <div class="form-group">
-                            <label for="placeRadius">Radio (km) *:</label>
-                            <input type="number" id="placeRadius" class="form-control" value="5" min="0.1" max="50" step="0.1" required>
+                        <div class="form-group dates-row">
+                            <div class="date-field">
+                                <label for="placeRadiusCommerce">Radio comercios (km) *:</label>
+                                <input type="number" id="placeRadiusCommerce" class="form-control" value="5" min="0.1" max="50" step="0.1" required title="Google Places alrededor del centro del mapa">
+                            </div>
+                            <div class="date-field">
+                                <label for="placeRadiusProximity">Radio proximidad recursos (km) *:</label>
+                                <input type="number" id="placeRadiusProximity" class="form-control" value="0.5" min="0.1" max="50" step="0.1" required title="Recursos/mobiliario cerca de cada comercio encontrado">
+                            </div>
                         </div>
                         <button id="searchByPlace" class="btn btn-warning">Buscar comercios + recursos</button>
                         <button id="searchMobiliarioByPlace" class="btn btn-info">Buscar comercios + mobiliario</button>
