@@ -97,6 +97,12 @@
                                 <span>De una zona personalizada</span>
                             </label>
                         </div>
+                        <div class="search-option">
+                            <label>
+                                <input type="radio" name="searchType" value="route">
+                                <span>De una ruta (corredor)</span>
+                            </label>
+                        </div>
                     </div>
 
                     <div class="search-instructions">
@@ -115,6 +121,7 @@
                                 <li><strong>Dirección:</strong> Escribe una dirección y busca recursos o mobiliario cerca</li>
                                 <li><strong>Parada:</strong> Introduce el número de emplazamiento para localizar la parada en el mapa</li>
                                 <li><strong>Zona personalizada:</strong> Crea zonas dibujando en el mapa y guárdalas para búsquedas futuras</li>
+                                <li><strong>Ruta (corredor):</strong> <em>Manual</em> — clics en el mapa para trazar la ruta; <em>Automático</em> — origen y destino, perfil a pie o en coche, calcula rutas OSRM (con alternativas) y elige una. El <em>ancho del corredor</em> (km) define qué recursos quedan cerca del eje. Orden: km desde el inicio de la ruta y distancia al eje. Los filtros del panel aplican a los recursos.</li>
                                 <li><strong>Radio obligatorio:</strong> Siempre debes especificar el radio de búsqueda (0,1–50 km)</li>
                             </ul>
                         </div>
@@ -216,6 +223,57 @@
                         </div>
                         <button id="searchByZone" class="btn btn-warning">Buscar Recursos en Zona</button>
                         <button id="useSavedLocationZone" class="btn btn-info" title="No hay ubicación guardada. Usa 'Obtener Ubicación Actual' primero.">📍 ¿Donde Buscar?</button>
+                    </div>
+
+                    <!-- Búsqueda por ruta (corredor) -->
+                    <div id="routeSearch" class="search-panel">
+                        <div class="form-group">
+                            <label for="routeBufferKm">Ancho del corredor (km) *:</label>
+                            <input type="number" id="routeBufferKm" class="form-control" value="0.3" min="0.1" max="50" step="0.1" required title="Distancia máxima al eje de la ruta">
+                            <small class="form-text text-muted">Recursos a menos de esta distancia del trazado (0,1–50 km)</small>
+                        </div>
+                        <div class="form-group">
+                            <span class="form-label" style="display:block;margin-bottom:0.35rem;">Cómo definir la ruta:</span>
+                            <label style="display:block;margin-bottom:0.25rem;">
+                                <input type="radio" name="routeBuildMode" value="manual" checked>
+                                Manual (clics en el mapa)
+                            </label>
+                            <label style="display:block;">
+                                <input type="radio" name="routeBuildMode" value="auto">
+                                Automático (origen → destino, OSRM)
+                            </label>
+                        </div>
+                        <div id="routeManualControls">
+                            <div class="form-group">
+                                <button type="button" id="routeStartDraw" class="btn btn-info btn-sm">✏️ Trazar ruta</button>
+                                <button type="button" id="routeUndoPoint" class="btn btn-secondary btn-sm">↩ Último punto</button>
+                                <button type="button" id="routeClearDraw" class="btn btn-danger btn-sm">🗑️ Limpiar trazado</button>
+                            </div>
+                            <p id="routeDrawStatus" class="form-text text-muted" style="font-size:0.75rem;">Pulsa «Trazar ruta» y haz clic en el mapa (mín. 2 puntos).</p>
+                        </div>
+                        <div id="routeAutoControls" style="display: none;">
+                            <div class="form-group">
+                                <label for="routeProfile">Perfil:</label>
+                                <select id="routeProfile" class="form-control">
+                                    <option value="foot">A pie</option>
+                                    <option value="driving">En coche</option>
+                                </select>
+                            </div>
+                            <div class="form-group">
+                                <button type="button" id="routePickOrigin" class="btn btn-info btn-sm">📍 Origen en mapa</button>
+                                <button type="button" id="routePickDest" class="btn btn-info btn-sm">🏁 Destino en mapa</button>
+                            </div>
+                            <p id="routeOriginLabel" class="form-text text-muted" style="font-size:0.75rem;">Origen: —</p>
+                            <p id="routeDestLabel" class="form-text text-muted" style="font-size:0.75rem;">Destino: —</p>
+                            <div class="form-group">
+                                <button type="button" id="routeCalculate" class="btn btn-success btn-sm">🛣️ Calcular rutas</button>
+                            </div>
+                            <div class="form-group" id="routeAlternativeWrap" style="display: none;">
+                                <label for="routeAlternative">Ruta a usar:</label>
+                                <select id="routeAlternative" class="form-control"></select>
+                            </div>
+                        </div>
+                        <button id="searchByRoute" class="btn btn-warning">Buscar recursos en corredor</button>
                     </div>
                 </div>
                 

@@ -811,6 +811,19 @@ let customZones = [];
 let currentZone = null;
 let zoneLayer = null;
 
+// Búsqueda por ruta (corredor)
+let routeManualPoints = [];
+let routeDrawingLayer = null;
+let routeDisplayLayer = null;
+let routeOsrmRoutes = [];
+let routeSelectedIndex = 0;
+let isDrawingRoute = false;
+let routePickEndpoint = null;
+let routeOrigin = null;
+let routeDest = null;
+let routeMapClickHandler = null;
+let routeEndpointLayer = null;
+
 // Variables para selección de recursos
 let recursosSeleccionados = new Set(); // Almacena los No_ de recursos seleccionados
 let recursosDataMap = new Map(); // Almacena los datos completos de cada recurso por No_
@@ -1269,6 +1282,8 @@ function crearPopupRecurso(marker, recurso) {
             <p><strong>Estado:</strong> ${recurso.tiene_incidencia && recurso.total_incidencias > 0 ? '🚨 Con incidencias' : recurso.total_campanas > 0 ? '📋 Con campañas' : '✅ Sin problemas'}</p>
             <p><strong>Total campañas:</strong> ${recurso.total_campanas || 0}</p>
             <p><strong>Total incidencias:</strong> ${recurso.total_incidencias || 0}</p>
+            ${recurso.km_desde_inicio_ruta != null ? `<p><strong>Km desde inicio ruta:</strong> ${recurso.km_desde_inicio_ruta}</p>` : ''}
+            ${recurso.distancia_a_ruta_km != null ? `<p><strong>Distancia al eje:</strong> ${recurso.distancia_a_ruta_km} km</p>` : ''}
             <div style="margin-top: 10px; padding-top: 10px; border-top: 1px solid #ddd;">
                 <label style="display: flex; align-items: center; cursor: pointer;">
                     <input type="checkbox" id="select-${recurso.No_}" 
@@ -3148,7 +3163,8 @@ function clearMap() {
     
     // Limpiar resultados de búsqueda
     clearSearchResults();
-    
+    clearRouteMapLayers(true);
+
     // Remover cualquier otra capa que no sea la base (más seguro)
     const layersToRemove = [];
     map.eachLayer(function(layer) {
@@ -3305,6 +3321,17 @@ document.addEventListener('DOMContentLoaded', async function() {
     document.getElementById('searchMobiliarioByCoordinates').addEventListener('click', searchMobiliarioByCoordinates);
     document.getElementById('searchMobiliarioByAddress').addEventListener('click', searchMobiliarioByAddress);
     document.getElementById('searchByZone').addEventListener('click', searchByZone);
+    document.getElementById('searchByRoute').addEventListener('click', searchByRoute);
+    document.getElementById('routeStartDraw').addEventListener('click', startRouteManualDraw);
+    document.getElementById('routeUndoPoint').addEventListener('click', undoRoutePoint);
+    document.getElementById('routeClearDraw').addEventListener('click', () => clearRouteDrawing(true));
+    document.getElementById('routePickOrigin').addEventListener('click', () => pickRouteEndpoint('origin'));
+    document.getElementById('routePickDest').addEventListener('click', () => pickRouteEndpoint('destination'));
+    document.getElementById('routeCalculate').addEventListener('click', calculateRouteOsrm);
+    document.getElementById('routeAlternative').addEventListener('change', onRouteAlternativeChange);
+    document.querySelectorAll('input[name="routeBuildMode"]').forEach(radio => {
+        radio.addEventListener('change', onRouteBuildModeChange);
+    });
     document.getElementById('useCurrentLocation').addEventListener('click', useCurrentLocation);
     document.getElementById('cancelSearch').addEventListener('click', cancelSearch);
     
@@ -3435,8 +3462,12 @@ function getSelectedPlaceTypeLabel() {
 // Cambiar tipo de búsqueda
 function switchSearchType() {
     console.log('🔄 Cambiando tipo de búsqueda...');
-    
+
+    const prevType = currentSearchType;
     const searchType = document.querySelector('input[name="searchType"]:checked').value;
+    if (prevType === 'route' && searchType !== 'route') {
+        stopRouteInteraction();
+    }
     console.log('📍 Tipo de búsqueda seleccionado:', searchType);
     
     // Ocultar todos los paneles
@@ -3456,6 +3487,9 @@ function switchSearchType() {
     }
     
     currentSearchType = searchType;
+    if (searchType === 'route') {
+        updateRouteBuildModeVisibility();
+    }
     console.log('✅ Tipo de búsqueda cambiado correctamente');
 }
 
@@ -5858,6 +5892,379 @@ function removeZoneFromMap(zone) {
     // Esta función se puede expandir si necesitas remover zonas específicas
     clearZoneFromMap();
     console.log('✅ Zona removida del mapa');
+}
+
+function updateRouteBuildModeVisibility() {
+    const mode = document.querySelector('input[name="routeBuildMode"]:checked')?.value || 'manual';
+    const manual = document.getElementById('routeManualControls');
+    const auto = document.getElementById('routeAutoControls');
+    if (manual) manual.style.display = mode === 'manual' ? '' : 'none';
+    if (auto) auto.style.display = mode === 'auto' ? '' : 'none';
+}
+
+function onRouteBuildModeChange() {
+    stopRouteInteraction();
+    updateRouteBuildModeVisibility();
+    if (document.querySelector('input[name="routeBuildMode"]:checked')?.value === 'auto') {
+        routeManualPoints = [];
+        refreshRouteDrawingLayer();
+    } else {
+        routeOsrmRoutes = [];
+        routeSelectedIndex = 0;
+        const altWrap = document.getElementById('routeAlternativeWrap');
+        const altSelect = document.getElementById('routeAlternative');
+        if (altWrap) altWrap.style.display = 'none';
+        if (altSelect) altSelect.innerHTML = '';
+    }
+}
+
+function stopRouteInteraction() {
+    isDrawingRoute = false;
+    routePickEndpoint = null;
+    map.getContainer().style.cursor = '';
+    if (routeMapClickHandler) {
+        map.off('click', routeMapClickHandler);
+        routeMapClickHandler = null;
+    }
+    document.querySelectorAll('.route-cancel-btn').forEach(el => el.remove());
+}
+
+function clearRouteMapLayers(clearEndpoints = true) {
+    stopRouteInteraction();
+    if (routeDrawingLayer) {
+        map.removeLayer(routeDrawingLayer);
+        routeDrawingLayer = null;
+    }
+    if (routeDisplayLayer) {
+        map.removeLayer(routeDisplayLayer);
+        routeDisplayLayer = null;
+    }
+    if (clearEndpoints && routeEndpointLayer) {
+        map.removeLayer(routeEndpointLayer);
+        routeEndpointLayer = null;
+    }
+    routeManualPoints = [];
+    routeOsrmRoutes = [];
+    routeSelectedIndex = 0;
+    if (clearEndpoints) {
+        routeOrigin = null;
+        routeDest = null;
+        updateRouteEndpointLabels();
+    }
+    const status = document.getElementById('routeDrawStatus');
+    if (status) status.textContent = 'Pulsa «Trazar ruta» y haz clic en el mapa (mín. 2 puntos).';
+    const altWrap = document.getElementById('routeAlternativeWrap');
+    if (altWrap) altWrap.style.display = 'none';
+    const altSelect = document.getElementById('routeAlternative');
+    if (altSelect) altSelect.innerHTML = '';
+}
+
+function updateRouteEndpointLabels() {
+    const oEl = document.getElementById('routeOriginLabel');
+    const dEl = document.getElementById('routeDestLabel');
+    if (oEl) {
+        oEl.textContent = routeOrigin
+            ? `Origen: ${routeOrigin.lat.toFixed(6)}, ${routeOrigin.lon.toFixed(6)}`
+            : 'Origen: —';
+    }
+    if (dEl) {
+        dEl.textContent = routeDest
+            ? `Destino: ${routeDest.lat.toFixed(6)}, ${routeDest.lon.toFixed(6)}`
+            : 'Destino: —';
+    }
+}
+
+function refreshRouteEndpointMarkers() {
+    if (!routeEndpointLayer) {
+        routeEndpointLayer = L.layerGroup();
+    }
+    routeEndpointLayer.clearLayers();
+    if (routeOrigin) {
+        routeEndpointLayer.addLayer(L.marker([routeOrigin.lat, routeOrigin.lon], {
+            icon: L.divIcon({ className: 'search-marker', html: '🟢', iconSize: [24, 24], iconAnchor: [12, 12] }),
+        }));
+    }
+    if (routeDest) {
+        routeEndpointLayer.addLayer(L.marker([routeDest.lat, routeDest.lon], {
+            icon: L.divIcon({ className: 'search-marker', html: '🏁', iconSize: [24, 24], iconAnchor: [12, 12] }),
+        }));
+    }
+    if (routeOrigin || routeDest) {
+        routeEndpointLayer.addTo(map);
+    } else if (map.hasLayer(routeEndpointLayer)) {
+        map.removeLayer(routeEndpointLayer);
+    }
+}
+
+function refreshRouteDrawingLayer() {
+    if (routeDrawingLayer) {
+        map.removeLayer(routeDrawingLayer);
+        routeDrawingLayer = null;
+    }
+    if (routeManualPoints.length === 0) return;
+    routeDrawingLayer = L.layerGroup();
+    routeManualPoints.forEach((pt, index) => {
+        routeDrawingLayer.addLayer(L.circleMarker(pt, {
+            radius: 5,
+            color: '#6a1b9a',
+            fillColor: '#9b59b6',
+            fillOpacity: 0.9,
+            weight: 2,
+        }).bindPopup(`Punto ${index + 1}`));
+    });
+    if (routeManualPoints.length > 1) {
+        routeDrawingLayer.addLayer(L.polyline(routeManualPoints, {
+            color: '#6a1b9a',
+            weight: 4,
+            opacity: 0.85,
+        }));
+    }
+    routeDrawingLayer.addTo(map);
+    const status = document.getElementById('routeDrawStatus');
+    if (status) {
+        status.textContent = `${routeManualPoints.length} punto(s). ${routeManualPoints.length < 2 ? 'Añade al menos 2.' : 'Puedes buscar o seguir trazando.'}`;
+    }
+}
+
+function startRouteManualDraw() {
+    stopRouteInteraction();
+    if (document.querySelector('input[name="routeBuildMode"]:checked')?.value !== 'manual') {
+        showNotification('Activa el modo manual para trazar con clics', 'error');
+        return;
+    }
+    isDrawingRoute = true;
+    map.getContainer().style.cursor = 'crosshair';
+    showNotification('Clic en el mapa para añadir puntos a la ruta. «Último punto» deshace.', 'info');
+    routeMapClickHandler = function (e) {
+        routeManualPoints.push([e.latlng.lat, e.latlng.lng]);
+        refreshRouteDrawingLayer();
+    };
+    map.on('click', routeMapClickHandler);
+}
+
+function undoRoutePoint() {
+    if (!routeManualPoints.length) {
+        showNotification('No hay puntos que deshacer', 'info');
+        return;
+    }
+    routeManualPoints.pop();
+    refreshRouteDrawingLayer();
+}
+
+function clearRouteDrawing(notify = false) {
+    routeManualPoints = [];
+    refreshRouteDrawingLayer();
+    if (notify) showNotification('Trazado manual limpiado', 'info');
+}
+
+function pickRouteEndpoint(kind) {
+    stopRouteInteraction();
+    if (document.querySelector('input[name="routeBuildMode"]:checked')?.value !== 'auto') {
+        return;
+    }
+    routePickEndpoint = kind;
+    map.getContainer().style.cursor = 'crosshair';
+    const label = kind === 'origin' ? 'origen' : 'destino';
+    showNotification(`Haz clic en el mapa para marcar el ${label}`, 'info');
+    routeMapClickHandler = function (e) {
+        const point = { lat: e.latlng.lat, lon: e.latlng.lng };
+        if (routePickEndpoint === 'origin') routeOrigin = point;
+        else routeDest = point;
+        updateRouteEndpointLabels();
+        refreshRouteEndpointMarkers();
+        routeOsrmRoutes = [];
+        routeSelectedIndex = 0;
+        const altWrap = document.getElementById('routeAlternativeWrap');
+        if (altWrap) altWrap.style.display = 'none';
+        stopRouteInteraction();
+        showNotification(`${label.charAt(0).toUpperCase() + label.slice(1)} marcado`, 'success');
+    };
+    map.on('click', routeMapClickHandler);
+}
+
+function formatRouteDuration(seconds) {
+    if (seconds == null || isNaN(seconds)) return '—';
+    const mins = Math.round(seconds / 60);
+    if (mins < 60) return `${mins} min`;
+    const h = Math.floor(mins / 60);
+    const m = mins % 60;
+    return m ? `${h} h ${m} min` : `${h} h`;
+}
+
+function renderOsrmRouteOnMap(puntos) {
+    if (routeDisplayLayer) {
+        map.removeLayer(routeDisplayLayer);
+        routeDisplayLayer = null;
+    }
+    if (!puntos || puntos.length < 2) return;
+    routeDisplayLayer = L.layerGroup();
+    routeDisplayLayer.addLayer(L.polyline(puntos, {
+        color: '#2980b9',
+        weight: 5,
+        opacity: 0.9,
+    }));
+    routeDisplayLayer.addTo(map);
+    try {
+        map.fitBounds(L.polyline(puntos).getBounds().pad(0.08));
+    } catch (err) {
+        console.warn('No se pudo ajustar vista a la ruta', err);
+    }
+}
+
+function populateRouteAlternatives(routes) {
+    const wrap = document.getElementById('routeAlternativeWrap');
+    const select = document.getElementById('routeAlternative');
+    if (!wrap || !select) return;
+    select.innerHTML = '';
+    routes.forEach((r, idx) => {
+        const km = r.distance_m != null ? (r.distance_m / 1000).toFixed(2) : '?';
+        const dur = formatRouteDuration(r.duration_s);
+        const opt = document.createElement('option');
+        opt.value = String(idx);
+        opt.textContent = `${r.label || ('Ruta ' + (idx + 1))} — ${km} km, ${dur}`;
+        select.appendChild(opt);
+    });
+    select.value = String(routeSelectedIndex);
+    wrap.style.display = routes.length > 1 ? '' : (routes.length === 1 ? '' : 'none');
+}
+
+function onRouteAlternativeChange() {
+    const select = document.getElementById('routeAlternative');
+    if (!select || !routeOsrmRoutes.length) return;
+    routeSelectedIndex = parseInt(select.value, 10) || 0;
+    const route = routeOsrmRoutes[routeSelectedIndex];
+    if (route?.puntos) renderOsrmRouteOnMap(route.puntos);
+}
+
+async function calculateRouteOsrm() {
+    if (!routeOrigin || !routeDest) {
+        showNotification('Marca origen y destino en el mapa', 'error');
+        return;
+    }
+    const profile = document.getElementById('routeProfile')?.value || 'foot';
+    try {
+        showNotification('Calculando rutas…', 'info');
+        const response = await fetch('/api/ruta/calcular', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                origin: routeOrigin,
+                destination: routeDest,
+                profile,
+            }),
+        });
+        const data = await response.json();
+        if (!response.ok || data.error) {
+            throw new Error(data.error || data.message || `HTTP ${response.status}`);
+        }
+        routeOsrmRoutes = data.routes || [];
+        routeSelectedIndex = 0;
+        if (!routeOsrmRoutes.length) {
+            throw new Error('No se recibieron rutas');
+        }
+        populateRouteAlternatives(routeOsrmRoutes);
+        renderOsrmRouteOnMap(routeOsrmRoutes[0].puntos);
+        showNotification(`${routeOsrmRoutes.length} ruta(s) calculada(s)`, 'success');
+    } catch (err) {
+        console.error(err);
+        showNotification(`Error calculando ruta: ${err.message}`, 'error');
+    }
+}
+
+function getActiveRoutePoints() {
+    const mode = document.querySelector('input[name="routeBuildMode"]:checked')?.value || 'manual';
+    if (mode === 'manual') {
+        return routeManualPoints.length >= 2 ? routeManualPoints.map(p => [...p]) : null;
+    }
+    const route = routeOsrmRoutes[routeSelectedIndex];
+    return route?.puntos?.length >= 2 ? route.puntos : null;
+}
+
+async function searchByRoute() {
+    const buffer = parseFloat(document.getElementById('routeBufferKm')?.value);
+    if (!buffer || buffer <= 0 || buffer > 50) {
+        showNotification('Introduce un ancho de corredor válido (0,1–50 km)', 'error');
+        return;
+    }
+    const puntos = getActiveRoutePoints();
+    if (!puntos) {
+        const mode = document.querySelector('input[name="routeBuildMode"]:checked')?.value;
+        showNotification(
+            mode === 'manual'
+                ? 'Traza la ruta con al menos 2 puntos'
+                : 'Calcula una ruta automática (origen, destino y «Calcular rutas»)',
+            'error'
+        );
+        return;
+    }
+    const profile = document.getElementById('routeProfile')?.value || 'foot';
+    stopRouteInteraction();
+    try {
+        showNotification('Buscando recursos en el corredor…', 'info');
+        const url = addFechasToUrl('/api/recursos-cerca-ruta');
+        const response = await fetch(url, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                puntos,
+                radio_km: buffer,
+                profile: document.querySelector('input[name="routeBuildMode"]:checked')?.value === 'auto' ? profile : null,
+            }),
+        });
+        const data = await response.json();
+        if (!response.ok || data.error) {
+            throw new Error(data.error || `HTTP ${response.status}`);
+        }
+        displayRouteSearchResults(data, puntos, buffer);
+    } catch (err) {
+        console.error(err);
+        showNotification(`Error en búsqueda por ruta: ${err.message}`, 'error');
+    }
+}
+
+function displayRouteSearchResults(data, puntos, bufferKm) {
+    clearSearchResults();
+    currentSearchType = 'route';
+    currentSearchData = data;
+
+    searchLayer = L.layerGroup();
+    const polyline = L.polyline(puntos, {
+        color: '#6a1b9a',
+        weight: 5,
+        opacity: 0.9,
+    });
+    polyline.bindPopup(`
+        <div style="text-align:center;">
+            <h4>🛣️ Eje de ruta</h4>
+            <p><strong>Corredor:</strong> ± ${bufferKm} km al eje</p>
+            <p><strong>Recursos:</strong> ${data.recursos_cerca ?? (data.recursos?.length || 0)}</p>
+        </div>
+    `);
+    searchLayer.addLayer(polyline);
+
+    const recursos = data.recursos || [];
+    if (recursos.length) {
+        const posicionesMap = calcularPosicionesMarcadoresSeparados(recursos);
+        recursos.forEach(recurso => {
+            const pos = posicionesMap.get(String(recurso.No_ ?? recurso['No_'] ?? ''));
+            const marker = crearMarcadorRecurso(recurso, pos);
+            if (marker) searchLayer.addLayer(marker);
+        });
+    }
+    updateContadorSeleccionados();
+    searchLayer.addTo(map);
+    try {
+        map.fitBounds(polyline.getBounds().pad(0.12));
+    } catch (e) {
+        console.warn(e);
+    }
+    const filtros = getRecursoFiltersSummary();
+    showNotification(
+        `✓ ${recursos.length} recursos en corredor de ${bufferKm} km${filtros}`,
+        'success'
+    );
 }
 
 // Buscar recursos en zona

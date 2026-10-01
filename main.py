@@ -226,6 +226,64 @@ def _normalizar_radio_km(radio_km, nombre_param):
     return r
 
 
+def _distancia_y_frac_en_segmento_km(p_lat, p_lon, a_lat, a_lon, b_lat, b_lon):
+    """Distancia mínima (km) del punto al segmento y fracción t∈[0,1] sobre el segmento."""
+    lat0 = (a_lat + b_lat) / 2
+    lon0 = (a_lon + b_lon) / 2
+
+    def to_xy(lat, lon):
+        r = 6371.0
+        x = math.radians(lon - lon0) * math.cos(math.radians(lat0)) * r
+        y = math.radians(lat - lat0) * r
+        return x, y
+
+    px, py = to_xy(p_lat, p_lon)
+    ax, ay = to_xy(a_lat, a_lon)
+    bx, by = to_xy(b_lat, b_lon)
+    dx, dy = bx - ax, by - ay
+    len2 = dx * dx + dy * dy
+    if len2 < 1e-15:
+        return calcular_distancia_haversine(p_lat, p_lon, a_lat, a_lon), 0.0
+    t = max(0.0, min(1.0, ((px - ax) * dx + (py - ay) * dy) / len2))
+    cx, cy = ax + t * dx, ay + t * dy
+    return math.hypot(px - cx, py - cy), t
+
+
+def metricas_punto_sobre_ruta_km(p_lat, p_lon, puntos):
+    """Distancia al eje de la ruta (km) y km acumulados desde el inicio hasta la proyección."""
+    if not puntos:
+        return float('inf'), 0.0
+    if len(puntos) == 1:
+        la, lo = float(puntos[0][0]), float(puntos[0][1])
+        return calcular_distancia_haversine(p_lat, p_lon, la, lo), 0.0
+
+    best_d = float('inf')
+    best_along = 0.0
+    acc = 0.0
+    for i in range(len(puntos) - 1):
+        la1, lo1 = float(puntos[i][0]), float(puntos[i][1])
+        la2, lo2 = float(puntos[i + 1][0]), float(puntos[i + 1][1])
+        seg_len = calcular_distancia_haversine(la1, lo1, la2, lo2)
+        d, t = _distancia_y_frac_en_segmento_km(p_lat, p_lon, la1, lo1, la2, lo2)
+        along = acc + t * seg_len
+        if d < best_d:
+            best_d = d
+            best_along = along
+        acc += seg_len
+    return best_d, best_along
+
+
+def _filtros_recursos_desde_request():
+    """Tipos, empresas y familias desde query (GET o POST con query string)."""
+    tipos_recurso = request.args.get('tipos_recurso', '')
+    tipos_list = [t.strip() for t in tipos_recurso.split(',') if t.strip()] if tipos_recurso else []
+    empresas = request.args.get('empresas', '')
+    empresas_list = [e.strip() for e in empresas.split(',') if e.strip()] if empresas else []
+    familias = request.args.get('familias', '')
+    familias_list = [f.strip() for f in familias.split(',') if f.strip()] if familias else []
+    return tipos_list, empresas_list, familias_list
+
+
 def radios_busqueda_por_lugar_desde_request():
     """
     radio_lugares: búsqueda Google Places alrededor del centro.
@@ -1137,7 +1195,7 @@ app = Flask(__name__)
 CORS(app)
 
 # Incrementar en cada publicación (cache-bust del navegador)
-GIS_APP_BUILD = os.getenv('GIS_APP_BUILD', '20261001-dual-radius-10')
+GIS_APP_BUILD = os.getenv('GIS_APP_BUILD', '20261001-route-search-12')
 
 app.config['SECRET_KEY'] = Config.SECRET_KEY
 app.config['SESSION_COOKIE_HTTPONLY'] = True
@@ -2551,6 +2609,170 @@ def get_mobiliario_cerca_lugares():
     except Exception as e:
         print(f"Error en endpoint /api/mobiliario-cerca-lugares: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+def _consultar_recursos_filtrados_sql():
+    """Lista recursos con coordenadas válidas y filtros de panel (fechas + tipos/empresa/familia)."""
+    fecha_desde, fecha_hasta = get_fechas()
+    tipos_list, empresas_list, familias_list = _filtros_recursos_desde_request()
+    where_conditions = ["[PuntoX] != 0", "[PuntoY] != 0"]
+    params = [fecha_desde, fecha_hasta]
+    if tipos_list:
+        placeholders = ','.join(['?' for _ in tipos_list])
+        where_conditions.append(f"[Tipo Recurso] IN ({placeholders})")
+        params.extend(tipos_list)
+    if empresas_list:
+        placeholders = ','.join(['?' for _ in empresas_list])
+        where_conditions.append(f"Empresa IN ({placeholders})")
+        params.extend(empresas_list)
+    if familias_list:
+        placeholders = ','.join(['?' for _ in familias_list])
+        where_conditions.append(f"Familia IN ({placeholders})")
+        params.extend(familias_list)
+    query = f"""
+        SELECT [No_], [Name], [PuntoX], [PuntoY], Incidencia, Campañas, [Tipo Recurso], Empresa, [Ruta]
+        FROM [dbo].[RecursosPorFechasGlobal](?, ?)
+        WHERE {' AND '.join(where_conditions)}
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(query, params)
+    columns = [column[0] for column in cursor.description]
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    return columns, rows
+
+
+@app.route('/api/ruta/calcular', methods=['POST'])
+def calcular_ruta_osrm():
+    """Calcula rutas origen→destino (a pie o en coche) vía OSRM con alternativas."""
+    try:
+        body = request.get_json(silent=True) or {}
+        origin = body.get('origin') or {}
+        dest = body.get('destination') or body.get('dest') or {}
+        profile = (body.get('profile') or 'foot').strip().lower()
+        if profile not in ('foot', 'driving'):
+            return jsonify({"error": "profile debe ser 'foot' o 'driving'"}), 400
+        try:
+            o_lat = float(origin.get('lat'))
+            o_lon = float(origin.get('lon'))
+            d_lat = float(dest.get('lat'))
+            d_lon = float(dest.get('lon'))
+        except (TypeError, ValueError):
+            return jsonify({"error": "origin y destination requieren lat y lon numéricos"}), 400
+
+        osrm_base = (os.getenv('OSRM_API_URL') or 'https://router.project-osrm.org').rstrip('/')
+        osrm_profile = 'foot' if profile == 'foot' else 'driving'
+        coord_path = f"{o_lon},{o_lat};{d_lon},{d_lat}"
+        url = f"{osrm_base}/route/v1/{osrm_profile}/{coord_path}"
+        resp = requests.get(
+            url,
+            params={
+                'alternatives': 'true',
+                'overview': 'full',
+                'geometries': 'geojson',
+                'steps': 'false',
+            },
+            headers={'User-Agent': 'GIS-Malla/1.0 (gis.malla.es)'},
+            timeout=25,
+        )
+        if resp.status_code != 200:
+            return jsonify({
+                "error": f"OSRM HTTP {resp.status_code}",
+                "message": resp.text[:500],
+            }), 502
+        data = resp.json()
+        if data.get('code') != 'Ok' or not data.get('routes'):
+            return jsonify({
+                "error": "No se pudo calcular la ruta",
+                "message": data.get('message') or data.get('code'),
+            }), 502
+
+        routes_out = []
+        for idx, route in enumerate(data.get('routes') or []):
+            geom = (route.get('geometry') or {})
+            coords = geom.get('coordinates') or []
+            puntos = [[float(c[1]), float(c[0])] for c in coords if len(c) >= 2]
+            if len(puntos) < 2:
+                continue
+            routes_out.append({
+                'index': idx,
+                'label': 'Principal' if idx == 0 else f'Alternativa {idx}',
+                'profile': profile,
+                'distance_m': route.get('distance'),
+                'duration_s': route.get('duration'),
+                'puntos': puntos,
+                'puntos_count': len(puntos),
+            })
+        if not routes_out:
+            return jsonify({"error": "Ruta sin geometría utilizable"}), 502
+        return jsonify({
+            "profile": profile,
+            "routes": routes_out,
+            "routes_count": len(routes_out),
+        })
+    except Exception as e:
+        print(f"Error en /api/ruta/calcular: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/recursos-cerca-ruta', methods=['POST'])
+def get_recursos_cerca_ruta():
+    """Recursos dentro de un corredor (radio_km) alrededor de una polilínea de ruta."""
+    try:
+        body = request.get_json(silent=True) or {}
+        puntos_raw = body.get('puntos') or body.get('points') or []
+        radio_km = body.get('radio_km', body.get('radio', 0.5))
+        profile = (body.get('profile') or '').strip().lower() or None
+
+        puntos = []
+        for p in puntos_raw:
+            if isinstance(p, (list, tuple)) and len(p) >= 2:
+                puntos.append([float(p[0]), float(p[1])])
+            elif isinstance(p, dict) and 'lat' in p and 'lon' in p:
+                puntos.append([float(p['lat']), float(p['lon'])])
+
+        if len(puntos) < 2:
+            return jsonify({"error": "Se requieren al menos 2 puntos en la ruta"}), 400
+        try:
+            radio_km = _normalizar_radio_km(radio_km, 'radio_km')
+        except ValueError as e:
+            return jsonify({"error": str(e)}), 400
+
+        columns, rows = _consultar_recursos_filtrados_sql()
+        recursos_data = []
+        for row in rows:
+            recurso = clean_data(dict(zip(columns, row)))
+            plat = recurso.get('PuntoY')
+            plon = recurso.get('PuntoX')
+            if plat is None or plon is None:
+                continue
+            dist_eje, km_inicio = metricas_punto_sobre_ruta_km(float(plat), float(plon), puntos)
+            if dist_eje <= radio_km:
+                recurso['total_campanas'] = recurso.get('Campañas', 0)
+                recurso['total_incidencias'] = recurso.get('Incidencia', 0)
+                recurso['tiene_incidencia'] = 1 if recurso['total_incidencias'] else 0
+                recurso['tiene_campana'] = 1 if recurso['total_campanas'] else 0
+                recurso['distancia_a_ruta_km'] = round(dist_eje, 3)
+                recurso['km_desde_inicio_ruta'] = round(km_inicio, 3)
+                recursos_data.append(recurso)
+
+        recursos_data.sort(key=lambda x: (x['km_desde_inicio_ruta'], x['distancia_a_ruta_km']))
+
+        return jsonify({
+            "tipo_busqueda": "ruta",
+            "radio_km": radio_km,
+            "radio_corredor_km": radio_km,
+            "puntos_ruta": len(puntos),
+            "profile": profile,
+            "recursos_cerca": len(recursos_data),
+            "recursos": recursos_data,
+        })
+    except Exception as e:
+        print(f"Error en endpoint /api/recursos-cerca-ruta: {e}")
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route('/api/geocodificar-direccion')
 def api_geocodificar_direccion():
