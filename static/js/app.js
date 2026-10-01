@@ -3327,6 +3327,26 @@ document.addEventListener('DOMContentLoaded', async function() {
     document.getElementById('routeClearDraw').addEventListener('click', () => clearRouteDrawing(true));
     document.getElementById('routePickOrigin').addEventListener('click', () => pickRouteEndpoint('origin'));
     document.getElementById('routePickDest').addEventListener('click', () => pickRouteEndpoint('destination'));
+    document.getElementById('routeGeocodeOrigin').addEventListener('click', () => setRouteEndpointFromAddress('origin'));
+    document.getElementById('routeGeocodeDest').addEventListener('click', () => setRouteEndpointFromAddress('destination'));
+    const routeOriginInput = document.getElementById('routeOriginInput');
+    const routeDestInput = document.getElementById('routeDestInput');
+    if (routeOriginInput) {
+        routeOriginInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                setRouteEndpointFromAddress('origin');
+            }
+        });
+    }
+    if (routeDestInput) {
+        routeDestInput.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                setRouteEndpointFromAddress('destination');
+            }
+        });
+    }
     document.getElementById('routeCalculate').addEventListener('click', calculateRouteOsrm);
     document.getElementById('routeAlternative').addEventListener('change', onRouteAlternativeChange);
     document.querySelectorAll('input[name="routeBuildMode"]').forEach(radio => {
@@ -5949,6 +5969,10 @@ function clearRouteMapLayers(clearEndpoints = true) {
     if (clearEndpoints) {
         routeOrigin = null;
         routeDest = null;
+        const oIn = document.getElementById('routeOriginInput');
+        const dIn = document.getElementById('routeDestInput');
+        if (oIn) oIn.value = '';
+        if (dIn) dIn.value = '';
         updateRouteEndpointLabels();
     }
     const status = document.getElementById('routeDrawStatus');
@@ -5959,18 +5983,113 @@ function clearRouteMapLayers(clearEndpoints = true) {
     if (altSelect) altSelect.innerHTML = '';
 }
 
+function formatRouteEndpointSummary(point) {
+    if (!point) return '—';
+    const coords = `${point.lat.toFixed(6)}, ${point.lon.toFixed(6)}`;
+    return point.label ? `${point.label} (${coords})` : coords;
+}
+
+function clearRouteOsrmState() {
+    routeOsrmRoutes = [];
+    routeSelectedIndex = 0;
+    const altWrap = document.getElementById('routeAlternativeWrap');
+    if (altWrap) altWrap.style.display = 'none';
+    const altSelect = document.getElementById('routeAlternative');
+    if (altSelect) altSelect.innerHTML = '';
+    if (routeDisplayLayer) {
+        map.removeLayer(routeDisplayLayer);
+        routeDisplayLayer = null;
+    }
+}
+
+function fitMapToRouteEndpointsIfBoth() {
+    if (!routeOrigin || !routeDest) return;
+    try {
+        const bounds = L.latLngBounds(
+            [routeOrigin.lat, routeOrigin.lon],
+            [routeDest.lat, routeDest.lon]
+        );
+        map.fitBounds(bounds.pad(0.15));
+    } catch (err) {
+        console.warn('No se pudo ajustar vista origen/destino', err);
+    }
+}
+
+function applyRouteEndpoint(kind, lat, lon, addressLabel) {
+    const point = {
+        lat: Number(lat),
+        lon: Number(lon),
+        label: addressLabel ? String(addressLabel).trim() : null,
+    };
+    if (kind === 'origin') {
+        routeOrigin = point;
+    } else {
+        routeDest = point;
+    }
+    const inputId = kind === 'origin' ? 'routeOriginInput' : 'routeDestInput';
+    const inp = document.getElementById(inputId);
+    if (inp && point.label) {
+        inp.value = point.label;
+    }
+    updateRouteEndpointLabels();
+    refreshRouteEndpointMarkers();
+    clearRouteOsrmState();
+    fitMapToRouteEndpointsIfBoth();
+}
+
+async function executeRouteEndpointGeocode(kind, originalAddress, _radius, lat, lon, formattedAddress) {
+    applyRouteEndpoint(kind, lat, lon, formattedAddress || originalAddress);
+    const name = kind === 'origin' ? 'Origen' : 'Destino';
+    showNotification(`${name} establecido`, 'success');
+}
+
+async function setRouteEndpointFromAddress(kind) {
+    if (document.querySelector('input[name="routeBuildMode"]:checked')?.value !== 'auto') {
+        return;
+    }
+    const inputId = kind === 'origin' ? 'routeOriginInput' : 'routeDestInput';
+    const address = document.getElementById(inputId)?.value.trim();
+    if (!address) {
+        showNotification('Introduce una dirección para buscar', 'error');
+        return;
+    }
+    try {
+        showNotification('Geocodificando…', 'info');
+        const geoUrl = `/api/geocodificar-direccion?direccion=${encodeURIComponent(address)}`;
+        const geoResponse = await fetch(geoUrl);
+        const geoData = await geoResponse.json();
+        if (!geoResponse.ok || geoData.error) {
+            throw new Error(geoData.error || 'No se pudo geocodificar la dirección');
+        }
+        const resultados = geoData.resultados || [];
+        if (!resultados.length) {
+            throw new Error('No se encontraron coincidencias');
+        }
+        if (geoData.multiple && resultados.length > 1) {
+            showAddressPickerModal(
+                resultados,
+                address,
+                null,
+                (orig, radius, lat, lon, dir) => executeRouteEndpointGeocode(kind, orig, radius, lat, lon, dir)
+            );
+            return;
+        }
+        const sel = resultados[0];
+        await executeRouteEndpointGeocode(kind, address, null, sel.lat, sel.lon, sel.direccion);
+    } catch (err) {
+        console.error(err);
+        showNotification(`Error: ${err.message}`, 'error');
+    }
+}
+
 function updateRouteEndpointLabels() {
     const oEl = document.getElementById('routeOriginLabel');
     const dEl = document.getElementById('routeDestLabel');
     if (oEl) {
-        oEl.textContent = routeOrigin
-            ? `Origen: ${routeOrigin.lat.toFixed(6)}, ${routeOrigin.lon.toFixed(6)}`
-            : 'Origen: —';
+        oEl.textContent = routeOrigin ? `Origen: ${formatRouteEndpointSummary(routeOrigin)}` : 'Origen: —';
     }
     if (dEl) {
-        dEl.textContent = routeDest
-            ? `Destino: ${routeDest.lat.toFixed(6)}, ${routeDest.lon.toFixed(6)}`
-            : 'Destino: —';
+        dEl.textContent = routeDest ? `Destino: ${formatRouteEndpointSummary(routeDest)}` : 'Destino: —';
     }
 }
 
@@ -6067,15 +6186,13 @@ function pickRouteEndpoint(kind) {
     const label = kind === 'origin' ? 'origen' : 'destino';
     showNotification(`Haz clic en el mapa para marcar el ${label}`, 'info');
     routeMapClickHandler = function (e) {
-        const point = { lat: e.latlng.lat, lon: e.latlng.lng };
-        if (routePickEndpoint === 'origin') routeOrigin = point;
-        else routeDest = point;
-        updateRouteEndpointLabels();
-        refreshRouteEndpointMarkers();
-        routeOsrmRoutes = [];
-        routeSelectedIndex = 0;
-        const altWrap = document.getElementById('routeAlternativeWrap');
-        if (altWrap) altWrap.style.display = 'none';
+        const endpointKind = routePickEndpoint === 'origin' ? 'origin' : 'destination';
+        applyRouteEndpoint(endpointKind, e.latlng.lat, e.latlng.lng, null);
+        const inputId = endpointKind === 'origin' ? 'routeOriginInput' : 'routeDestInput';
+        const inp = document.getElementById(inputId);
+        if (inp) {
+            inp.value = `${e.latlng.lat.toFixed(6)}, ${e.latlng.lng.toFixed(6)}`;
+        }
         stopRouteInteraction();
         showNotification(`${label.charAt(0).toUpperCase() + label.slice(1)} marcado`, 'success');
     };

@@ -121,7 +121,7 @@
                                 <li><strong>Dirección:</strong> Escribe una dirección y busca recursos o mobiliario cerca</li>
                                 <li><strong>Parada:</strong> Introduce el número de emplazamiento para localizar la parada en el mapa</li>
                                 <li><strong>Zona personalizada:</strong> Crea zonas dibujando en el mapa y guárdalas para búsquedas futuras</li>
-                                <li><strong>Ruta (corredor):</strong> <em>Manual</em> — clics en el mapa para trazar la ruta; <em>Automático</em> — origen y destino, perfil a pie o en coche, calcula rutas OSRM (con alternativas) y elige una. El <em>ancho del corredor</em> (km) define qué recursos quedan cerca del eje. Orden: km desde el inicio de la ruta y distancia al eje. Los filtros del panel aplican a los recursos.</li>
+                                <li><strong>Ruta (corredor):</strong> <em>Manual</em> — clics en el mapa para trazar la ruta; <em>Automático</em> — origen y destino por <strong>dirección</strong> (Google) o clic en el mapa, perfil a pie o en coche, calcula rutas OSRM (con alternativas) y elige una. El <em>ancho del corredor</em> (km) define qué recursos quedan cerca del eje. Orden: km desde el inicio de la ruta y distancia al eje. Los filtros del panel aplican a los recursos.</li>
                                 <li><strong>Radio obligatorio:</strong> Siempre debes especificar el radio de búsqueda (0,1–50 km)</li>
                             </ul>
                         </div>
@@ -260,10 +260,22 @@
                                 </select>
                             </div>
                             <div class="form-group">
-                                <button type="button" id="routePickOrigin" class="btn btn-info btn-sm">📍 Origen en mapa</button>
-                                <button type="button" id="routePickDest" class="btn btn-info btn-sm">🏁 Destino en mapa</button>
+                                <label for="routeOriginInput">Origen:</label>
+                                <input type="text" id="routeOriginInput" class="form-control" placeholder="Dirección o lugar en Baleares">
+                                <div style="margin-top:0.35rem;display:flex;flex-wrap:wrap;gap:0.35rem;">
+                                    <button type="button" id="routeGeocodeOrigin" class="btn btn-secondary btn-sm">🔎 Buscar dirección</button>
+                                    <button type="button" id="routePickOrigin" class="btn btn-info btn-sm">📍 En mapa</button>
+                                </div>
                             </div>
                             <p id="routeOriginLabel" class="form-text text-muted" style="font-size:0.75rem;">Origen: —</p>
+                            <div class="form-group">
+                                <label for="routeDestInput">Destino:</label>
+                                <input type="text" id="routeDestInput" class="form-control" placeholder="Dirección o lugar en Baleares">
+                                <div style="margin-top:0.35rem;display:flex;flex-wrap:wrap;gap:0.35rem;">
+                                    <button type="button" id="routeGeocodeDest" class="btn btn-secondary btn-sm">🔎 Buscar dirección</button>
+                                    <button type="button" id="routePickDest" class="btn btn-info btn-sm">🏁 En mapa</button>
+                                </div>
+                            </div>
                             <p id="routeDestLabel" class="form-text text-muted" style="font-size:0.75rem;">Destino: —</p>
                             <div class="form-group">
                                 <button type="button" id="routeCalculate" class="btn btn-success btn-sm">🛣️ Calcular rutas</button>
