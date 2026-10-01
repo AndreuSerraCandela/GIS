@@ -794,9 +794,14 @@ label[for*="Radius"] {
     transform: rotate(90deg);
 }
 
-#instructionsContent {
+#instructionsContent,
+.instructions-panel {
     margin-top: 0.5rem;
     padding-left: 0.5rem;
+}
+
+.instructions-panel[hidden] {
+    display: none !important;
 }
 
 .search-instructions ul {

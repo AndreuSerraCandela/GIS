@@ -1105,7 +1105,7 @@ app = Flask(__name__)
 CORS(app)
 
 # Incrementar en cada publicación (cache-bust del navegador)
-GIS_APP_BUILD = os.getenv('GIS_APP_BUILD', '20261001-commerce-pane-8')
+GIS_APP_BUILD = os.getenv('GIS_APP_BUILD', '20261001-instructions-panel-9')
 
 app.config['SECRET_KEY'] = Config.SECRET_KEY
 app.config['SESSION_COOKIE_HTTPONLY'] = True

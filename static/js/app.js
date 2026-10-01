@@ -1477,14 +1477,17 @@ function crearPopupRecurso(marker, recurso) {
 function toggleInstructions() {
     const content = document.getElementById('instructionsContent');
     const toggle = document.querySelector('.instructions-toggle');
-    const icon = document.getElementById('instructionsIcon');
-    
-    if (content.style.display === 'none') {
-        content.style.display = 'block';
+    if (!content || !toggle) return;
+
+    const open = content.hasAttribute('hidden');
+    if (open) {
+        content.removeAttribute('hidden');
         toggle.classList.add('expanded');
+        toggle.setAttribute('aria-expanded', 'true');
     } else {
-        content.style.display = 'none';
+        content.setAttribute('hidden', '');
         toggle.classList.remove('expanded');
+        toggle.setAttribute('aria-expanded', 'false');
     }
 }
 

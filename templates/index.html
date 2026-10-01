@@ -98,6 +98,27 @@
                             </label>
                         </div>
                     </div>
+
+                    <div class="search-instructions">
+                        <button type="button" class="instructions-toggle" onclick="toggleInstructions()" aria-expanded="false" aria-controls="instructionsContent">
+                            <span id="instructionsIcon">▶</span> <strong>💡 Instrucciones</strong>
+                        </button>
+                        <div id="instructionsContent" class="instructions-panel" hidden>
+                            <ul>
+                                <li><strong>Comercios (bancos, farmacias…):</strong> Centra el mapa, elige tipo y radio, pulsa <em>Buscar comercios + recursos</em>. Los comercios de Google se muestran como <span style="color:#6a1b9a;font-weight:bold">círculo morado + icono 🏦</span>; los recursos del GIS son círculos verdes/naranjas. 🎯 = centro; círculo discontinuo = radio.</li>
+                                <li><strong>Un solo radio (por ahora):</strong> (1) comercios alrededor del <strong>centro del mapa</strong>; (2) recursos/mobiliario dentro del mismo radio respecto al <strong>comercio más cercano</strong> a cada recurso.</li>
+                                <li><strong>Filtros del panel</strong> (tipo de recurso, empresa, familia, fechas) aplican a la parte de <strong>recursos</strong>, no a Google Places.</li>
+                                <li><strong>¿Dónde buscar?</strong> Centra el mapa y pulsa buscar, o usa el botón para marcar el punto o la ubicación GPS.</li>
+                                <li><strong>Tipo de lugar:</strong> Selecciona el tipo y pulsa buscar (elegir tipo solo no dibuja nada en el mapa).</li>
+                                <li><strong>Coordenadas:</strong> Introduce coordenadas manualmente, haz clic en el mapa o usa tu ubicación actual</li>
+                                <li><strong>Ubicación actual:</strong> La primera vez obtén tu ubicación GPS, después podrás reutilizarla fácilmente</li>
+                                <li><strong>Dirección:</strong> Escribe una dirección y busca recursos o mobiliario cerca</li>
+                                <li><strong>Parada:</strong> Introduce el número de emplazamiento para localizar la parada en el mapa</li>
+                                <li><strong>Zona personalizada:</strong> Crea zonas dibujando en el mapa y guárdalas para búsquedas futuras</li>
+                                <li><strong>Radio obligatorio:</strong> Siempre debes especificar el radio de búsqueda (0,1–50 km)</li>
+                            </ul>
+                        </div>
+                    </div>
                     
                     <!-- Búsqueda por tipo de lugar -->
                     <div id="placeSearch" class="search-panel active">
@@ -110,12 +131,10 @@
                         <div class="form-group">
                             <label for="placeRadius">Radio (km) *:</label>
                             <input type="number" id="placeRadius" class="form-control" value="5" min="0.1" max="50" step="0.1" required>
-                            <small class="form-text text-muted">Entre 0,1 y 50 km. Ver leyenda en <strong>Instrucciones</strong>.</small>
                         </div>
                         <button id="searchByPlace" class="btn btn-warning">Buscar comercios + recursos</button>
                         <button id="searchMobiliarioByPlace" class="btn btn-info">Buscar comercios + mobiliario</button>
                         <button id="useSavedLocationPlace" class="btn btn-info" title="Elegir punto en el mapa o usar ubicación GPS">📍 ¿Dónde buscar?</button>
-                        <small class="form-text text-muted">Centra el mapa donde quieras y pulsa buscar, o «¿Dónde buscar?» para marcar el punto.</small>
                         <button id="cancelSearch" class="btn btn-secondary" style="display: none;">Cancelar Búsqueda</button>
                     </div>
                     
@@ -191,27 +210,6 @@
                         </div>
                         <button id="searchByZone" class="btn btn-warning">Buscar Recursos en Zona</button>
                         <button id="useSavedLocationZone" class="btn btn-info" title="No hay ubicación guardada. Usa 'Obtener Ubicación Actual' primero.">📍 ¿Donde Buscar?</button>
-                    </div>
-                    
-                    <div class="search-instructions">
-                        <button type="button" class="instructions-toggle" onclick="toggleInstructions()">
-                            <span id="instructionsIcon">▶</span> <strong>💡 Instrucciones</strong>
-                        </button>
-                        <div id="instructionsContent" style="display: none; margin-top: 0.5rem;">
-                            <ul>
-                                <li><strong>Comercios (bancos, farmacias…):</strong> Centra el mapa, elige tipo y radio, pulsa <em>Buscar comercios + recursos</em>. Los comercios de Google se muestran como <span style="color:#6a1b9a;font-weight:bold">círculo morado + icono 🏦</span>; los recursos del GIS son círculos verdes/naranjas. 🎯 = centro; círculo discontinuo = radio.</li>
-                                <li><strong>Un solo radio (por ahora):</strong> (1) comercios alrededor del <strong>centro del mapa</strong>; (2) recursos/mobiliario dentro del mismo radio respecto al <strong>comercio más cercano</strong> a cada recurso.</li>
-                                <li><strong>Filtros del panel</strong> (tipo de recurso, empresa, familia, fechas) aplican a la parte de <strong>recursos</strong>, no a Google Places.</li>
-                                <li><strong>Tipo de lugar:</strong> Selecciona el tipo y pulsa buscar (o «¿Dónde buscar?» para marcar el centro)</li>
-                                <li><strong>Coordenadas:</strong> Introduce coordenadas manualmente, haz clic en el mapa o usa tu ubicación actual</li>
-                                <li><strong>Ubicación actual:</strong> La primera vez obtén tu ubicación GPS, después podrás reutilizarla fácilmente</li>
-                                <li><strong>Dirección:</strong> Escribe una dirección y busca recursos o mobiliario cerca</li>
-                                <li><strong>Parada:</strong> Introduce el número de emplazamiento para localizar la parada en el mapa</li>
-                                <li><strong>Zona personalizada:</strong> Crea zonas dibujando en el mapa y guárdalas para búsquedas futuras</li>
-                                <li><strong>Radio obligatorio:</strong> Siempre debes especificar el radio de búsqueda (0.1-50 km)</li>
-                                <li><strong>Posicionamiento:</strong> Para búsquedas por tipo de lugar, haz clic en el mapa donde quieres buscar</li>
-                            </ul>
-                        </div>
                     </div>
                 </div>
                 
