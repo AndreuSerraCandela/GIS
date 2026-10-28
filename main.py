@@ -25,7 +25,12 @@ from config.api_keys import (
     refresh_google_maps_api_key,
     resolve_google_maps_api_key,
 )
-from config.bc_incidencias import INCIDENCIAS_URL, BC_CONFIG
+from config.bc_incidencias import (
+    INCIDENCIAS_URL,
+    BC_CONFIG,
+    get_bc_auth_header,
+    get_bc_auth_credentials,
+)
 from gtask_auth import GTaskAuth
 from gtask_service import init_backend_gtask_login
 import whatsapp_client
@@ -1195,7 +1200,7 @@ app = Flask(__name__)
 CORS(app)
 
 # Incrementar en cada publicación (cache-bust del navegador)
-GIS_APP_BUILD = os.getenv('GIS_APP_BUILD', '20261001-route-address-13')
+GIS_APP_BUILD = os.getenv('GIS_APP_BUILD', '20261028-tareas-revision-14')
 
 app.config['SECRET_KEY'] = Config.SECRET_KEY
 app.config['SESSION_COOKIE_HTTPONLY'] = True
@@ -3679,6 +3684,114 @@ def get_file():
         import traceback
         print(f"❌ Traceback completo: {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
+
+def _paradas_por_emplazamiento(codigos):
+    """Coordenadas de mobiliario para los números de parada indicados."""
+    codigos = [str(c).strip() for c in codigos if str(c).strip()]
+    codigos = list(dict.fromkeys(codigos))[:800]
+    if not codigos:
+        return {}
+    fecha_hoy = date.today().strftime('%Y-%m-%d')
+    placeholders = ','.join('?' for _ in codigos)
+    query = f"""
+        SELECT [Nº Emplazamiento], [Descripción], [Dirección], [PuntoX], [PuntoY]
+        FROM [dbo].[MobiliarioPorFechas](?, ?)
+        WHERE CAST([Nº Emplazamiento] AS NVARCHAR(50)) IN ({placeholders})
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute(query, [fecha_hoy, fecha_hoy, *codigos])
+    columns = [column[0] for column in cursor.description]
+    rows = cursor.fetchall()
+    cursor.close()
+    conn.close()
+    paradas = {}
+    for row in rows:
+        item = clean_data(dict(zip(columns, row)))
+        codigo = str(item.get('Nº Emplazamiento') or '').strip()
+        if codigo:
+            paradas[codigo] = item
+    return paradas
+
+
+@app.route('/api/tareas-revision', methods=['POST'])
+def obtener_tareas_revision():
+    """Tareas de revisión desde Business Central (GtaskMalla_GetTareasRevision)."""
+    try:
+        data = request.get_json(silent=True) or {}
+        fecha_desde = (data.get('fechaDesde') or '').strip()
+        fecha_hasta = (data.get('fechaHasta') or '').strip()
+        if not fecha_desde or not fecha_hasta:
+            return jsonify({
+                'success': False,
+                'error': 'Indica fecha desde y fecha hasta',
+            }), 400
+
+        json_input = {
+            'fechaDesde': fecha_desde,
+            'fechaHasta': fecha_hasta,
+        }
+        zona = data.get('zonaLimpieza')
+        if zona not in (None, ''):
+            try:
+                json_input['zonaLimpieza'] = int(zona)
+            except (ValueError, TypeError):
+                pass
+        codigo = (data.get('codigoEmplazamiento') or '').strip()
+        if codigo:
+            json_input['codigoEmplazamiento'] = codigo
+
+        base_url = (BC_CONFIG.get('base_url') or '').rstrip('/')
+        company = BC_CONFIG.get('company', 'Malla Publicidad')
+        url = f"{base_url}/ODataV4/GtaskMalla_GetTareasRevision?company='{company}'"
+        headers = {'Accept': 'application/json', 'Content-Type': 'application/json'}
+        auth_header = get_bc_auth_header()
+        auth_credentials = None
+        if auth_header:
+            headers['Authorization'] = auth_header
+        else:
+            auth_credentials = get_bc_auth_credentials()
+
+        response = requests.post(
+            url,
+            headers=headers,
+            data=json.dumps({'jsonText': json.dumps(json_input, ensure_ascii=False)}),
+            auth=auth_credentials,
+            timeout=BC_CONFIG.get('timeout', 120),
+        )
+        if response.status_code not in (200, 201):
+            return jsonify({
+                'success': False,
+                'error': f'Error al obtener tareas de revisión en BC: {response.status_code}',
+                'detalle': (response.text or '')[:500],
+            }), response.status_code
+
+        result_data = response.json()
+        raw = result_data.get('value', result_data)
+        if isinstance(raw, str):
+            raw = raw.replace('\r\n', ' ').replace('\n', ' ').strip()
+            tareas = json.loads(raw) if raw else []
+        else:
+            tareas = raw
+        if isinstance(tareas, dict):
+            tareas = tareas.get('tareas') or tareas.get('value') or []
+        if not isinstance(tareas, list):
+            tareas = []
+
+        codigos = [t.get('codigoEmplazamiento') for t in tareas if isinstance(t, dict)]
+        paradas = _paradas_por_emplazamiento(codigos)
+        return jsonify({
+            'success': True,
+            'tareas': tareas,
+            'paradas': paradas,
+            'count': len(tareas),
+        })
+    except json.JSONDecodeError as e:
+        return jsonify({'success': False, 'error': f'Error al parsear respuesta de BC: {e}'}), 502
+    except Exception as e:
+        print(f'Error en /api/tareas-revision: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/api/incidencias-abiertas', methods=['POST'])
 def api_incidencias_abiertas():

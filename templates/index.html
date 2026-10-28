@@ -330,6 +330,7 @@
                     <button id="loadAllData" class="btn btn-primary">Cargar Todos los Datos</button>
                     <button id="loadRecursos" class="btn btn-success">Cargar Recursos</button>
                     <button id="loadMobiliario" class="btn btn-info">Cargar Mobiliario</button>
+                    <button id="consultarTareasRevision" class="btn btn-primary" type="button" title="Consulta tareas de revisión en Business Central para las fechas del panel">🛣️ Tareas Revisión</button>
                     <div id="status" class="status"></div>
                 </div>
                 
@@ -362,6 +363,21 @@
         </footer>
     </div>
     
+    <div id="tareasRevisionModal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 1100px;">
+            <div class="modal-header" style="display: flex; justify-content: space-between; align-items: center;">
+                <h3 style="margin: 0;">🛣️ Tareas de Revisión</h3>
+                <span class="close" id="closeTareasRevisionModal" style="cursor: pointer; font-size: 24px;">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div id="tareasRevisionModalContent"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" id="cerrarTareasRevision" class="btn btn-secondary">Cerrar</button>
+            </div>
+        </div>
+    </div>
+
     <!-- Modal para crear/editar zonas -->
     <div id="zoneModal" class="modal" style="display: none;">
         <div class="modal-content">

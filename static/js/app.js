@@ -785,6 +785,7 @@ let map;
 let geoData = [];
 let recursosLayer = null;
 let mobiliarioLayer = null;
+let tareasRevisionLayer = null;
 let searchLayer = null;
 let placesLayer = null;
 let radiusCircle = null;
@@ -3160,6 +3161,14 @@ function clearMap() {
         }
         mobiliarioLayer = null;
     }
+    if (tareasRevisionLayer) {
+        try {
+            map.removeLayer(tareasRevisionLayer);
+        } catch (error) {
+            console.warn('Error removiendo capa de tareas de revisión:', error);
+        }
+        tareasRevisionLayer = null;
+    }
     
     // Limpiar resultados de búsqueda
     clearSearchResults();
@@ -3198,6 +3207,184 @@ async function checkHealth() {
 }
 
 // Event listeners
+function cerrarTareasRevisionModal() {
+    const modal = document.getElementById('tareasRevisionModal');
+    if (modal) modal.style.display = 'none';
+}
+
+function escapeHtmlRevision(value) {
+    return String(value ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function formatearFechaRevision(fecha) {
+    if (!fecha) return '—';
+    const s = String(fecha).trim().slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+        const [y, m, d] = s.split('-');
+        return `${d}/${m}/${y}`;
+    }
+    return escapeHtmlRevision(fecha);
+}
+
+function colorEstadoRevision(estado) {
+    const e = String(estado || '').toLowerCase();
+    if (e.includes('finaliz') || e.includes('complet')) return '#28a745';
+    if (e.includes('curso') || e.includes('proces')) return '#007bff';
+    if (e.includes('pend') || e.includes('abiert')) return '#ff8800';
+    return '#6c757d';
+}
+
+function mostrarTareasRevisionEnMapa(tareas, paradas) {
+    if (tareasRevisionLayer) {
+        map.removeLayer(tareasRevisionLayer);
+        tareasRevisionLayer = null;
+    }
+    tareasRevisionLayer = L.layerGroup();
+    const porParada = new Map();
+    (tareas || []).forEach((tarea) => {
+        const codigo = String(tarea.codigoEmplazamiento || '').trim();
+        if (!codigo) return;
+        if (!porParada.has(codigo)) porParada.set(codigo, []);
+        porParada.get(codigo).push(tarea);
+    });
+
+    const bounds = [];
+    let sinCoordenadas = 0;
+    porParada.forEach((lista, codigo) => {
+        const parada = paradas[codigo] || paradas[String(codigo)];
+        const lat = parada ? parseFloat(parada.PuntoY) : NaN;
+        const lon = parada ? parseFloat(parada.PuntoX) : NaN;
+        if (!parada || isNaN(lat) || isNaN(lon) || lat === 0 || lon === 0) {
+            sinCoordenadas += 1;
+            return;
+        }
+        const todasFinalizadas = lista.every((t) => {
+            const estado = String(t.estado || '').toLowerCase();
+            return estado.includes('finaliz') || estado.includes('complet');
+        });
+        const color = todasFinalizadas ? '#28a745' : '#ff8800';
+        const marker = L.marker([lat, lon], {
+            icon: L.divIcon({
+                className: 'tareas-revision-marker',
+                html: `<div style="background:${color};color:#fff;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;border:3px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.35);">🛣️</div>`,
+                iconSize: [32, 32],
+                iconAnchor: [16, 16],
+            }),
+        });
+        const filas = lista.map((t) => `
+            <li style="margin-bottom:4px;">
+                <strong>${escapeHtmlRevision(t.estado || 'Sin estado')}</strong>
+                · ${escapeHtmlRevision(t.responsable || 'Sin responsable')}
+                · ${formatearFechaRevision(t.fechaInicio)}
+            </li>`).join('');
+        marker.bindPopup(`
+            <div style="max-width:320px;">
+                <h4 style="margin:0 0 6px;">🛣️ Revisión · parada ${escapeHtmlRevision(codigo)}</h4>
+                <p style="margin:0 0 6px;">${escapeHtmlRevision(parada.Descripción || parada['Dirección'] || '')}</p>
+                <p style="margin:0 0 6px;"><strong>${lista.length}</strong> tarea(s)</p>
+                <ul style="margin:0;padding-left:18px;">${filas}</ul>
+            </div>
+        `, { maxWidth: 360 });
+        tareasRevisionLayer.addLayer(marker);
+        bounds.push([lat, lon]);
+    });
+    tareasRevisionLayer.addTo(map);
+    if (bounds.length) {
+        map.fitBounds(bounds, { padding: [30, 30], maxZoom: 16 });
+    }
+    return { pintadas: bounds.length, sinCoordenadas };
+}
+
+function mostrarTareasRevision(tareas, count, fechaDesde, fechaHasta) {
+    const modalContent = document.getElementById('tareasRevisionModalContent');
+    if (!modalContent) return;
+    if (!tareas.length) {
+        modalContent.innerHTML = `
+            <p style="text-align:center;color:#666;">No hay tareas de revisión entre ${formatearFechaRevision(fechaDesde)} y ${formatearFechaRevision(fechaHasta)}.</p>`;
+        return;
+    }
+    const porZona = {};
+    tareas.forEach((tarea) => {
+        const zona = tarea.zonaLimpieza != null && tarea.zonaLimpieza !== '' ? String(tarea.zonaLimpieza) : '—';
+        const resp = String(tarea.responsable || '—').trim() || '—';
+        if (!porZona[zona]) porZona[zona] = {};
+        if (!porZona[zona][resp]) porZona[zona][resp] = [];
+        porZona[zona][resp].push(tarea);
+    });
+    let html = `
+        <p style="font-weight:bold;color:#667eea;margin-top:0;">${count} tareas · ${formatearFechaRevision(fechaDesde)} – ${formatearFechaRevision(fechaHasta)}</p>
+        <div style="overflow:auto;max-height:60vh;">
+        <table style="width:100%;border-collapse:collapse;font-size:0.85rem;">
+            <thead>
+                <tr style="background:#f8f9fa;">
+                    <th style="padding:8px;border:1px solid #dee2e6;text-align:left;">Parada</th>
+                    <th style="padding:8px;border:1px solid #dee2e6;text-align:left;">Dirección</th>
+                    <th style="padding:8px;border:1px solid #dee2e6;text-align:left;">Estado</th>
+                    <th style="padding:8px;border:1px solid #dee2e6;text-align:left;">Inicio</th>
+                    <th style="padding:8px;border:1px solid #dee2e6;text-align:left;">Responsable</th>
+                </tr>
+            </thead>
+            <tbody>`;
+    Object.keys(porZona).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).forEach((zona) => {
+        Object.keys(porZona[zona]).sort((a, b) => a.localeCompare(b)).forEach((resp) => {
+            const grupo = porZona[zona][resp];
+            html += `<tr style="background:#e7e9fc;"><td colspan="5" style="padding:8px;border:1px solid #dee2e6;font-weight:bold;">Zona ${escapeHtmlRevision(zona)} · ${escapeHtmlRevision(resp)} (${grupo.length})</td></tr>`;
+            grupo.forEach((tarea, index) => {
+                const bg = index % 2 ? '#f8f9fa' : '#fff';
+                html += `<tr style="background:${bg};">
+                    <td style="padding:8px;border:1px solid #dee2e6;">${escapeHtmlRevision(tarea.codigoEmplazamiento || '—')}${tarea.descripcionEmplazamiento ? `<br><small>${escapeHtmlRevision(tarea.descripcionEmplazamiento)}</small>` : ''}</td>
+                    <td style="padding:8px;border:1px solid #dee2e6;">${escapeHtmlRevision(tarea.direccion || '—')}</td>
+                    <td style="padding:8px;border:1px solid #dee2e6;"><span style="background:${colorEstadoRevision(tarea.estado)};color:#fff;padding:2px 6px;border-radius:4px;">${escapeHtmlRevision(tarea.estado || '—')}</span></td>
+                    <td style="padding:8px;border:1px solid #dee2e6;">${formatearFechaRevision(tarea.fechaInicio)} ${escapeHtmlRevision(tarea.horaInicio || '')}</td>
+                    <td style="padding:8px;border:1px solid #dee2e6;">${escapeHtmlRevision(tarea.responsable || '—')}</td>
+                </tr>`;
+            });
+        });
+    });
+    html += '</tbody></table></div>';
+    modalContent.innerHTML = html;
+}
+
+async function consultarTareasRevision() {
+    const fechaDesde = document.getElementById('fechaDesde')?.value || '';
+    const fechaHasta = document.getElementById('fechaHasta')?.value || '';
+    if (!fechaDesde || !fechaHasta) {
+        showNotification('Selecciona fecha desde y fecha hasta para consultar las tareas de revisión', 'error');
+        return;
+    }
+    const modal = document.getElementById('tareasRevisionModal');
+    const modalContent = document.getElementById('tareasRevisionModalContent');
+    if (!modal || !modalContent) return;
+    modal.style.display = 'flex';
+    modalContent.innerHTML = '<p>Consultando tareas de revisión…</p>';
+    try {
+        const response = await fetch('/api/tareas-revision', {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ fechaDesde, fechaHasta }),
+        });
+        const result = await response.json();
+        if (!response.ok || !result.success) {
+            throw new Error(result.error || `HTTP ${response.status}`);
+        }
+        const tareas = result.tareas || [];
+        const mapa = mostrarTareasRevisionEnMapa(tareas, result.paradas || {});
+        mostrarTareasRevision(tareas, result.count || tareas.length, fechaDesde, fechaHasta);
+        const extra = mapa.sinCoordenadas
+            ? ` (${mapa.sinCoordenadas} parada(s) sin coordenadas)`
+            : '';
+        showNotification(`${tareas.length} tareas de revisión · ${mapa.pintadas} en el mapa${extra}`, 'success');
+    } catch (error) {
+        modalContent.innerHTML = `<p style="color:#dc3545;">No se han podido consultar las tareas de revisión.</p><p>${escapeHtmlRevision(error.message)}</p>`;
+        showNotification(error.message, 'error');
+    }
+}
+
 document.addEventListener('DOMContentLoaded', async function() {
     const ssoHandled = await procesarSsoTokenDesdeUrl();
     if (!ssoHandled) {
@@ -3307,6 +3494,9 @@ document.addEventListener('DOMContentLoaded', async function() {
     document.getElementById('loadAllData').addEventListener('click', loadAllGeoData);
     document.getElementById('loadRecursos').addEventListener('click', loadRecursos);
     document.getElementById('loadMobiliario').addEventListener('click', loadMobiliario);
+    document.getElementById('consultarTareasRevision').addEventListener('click', consultarTareasRevision);
+    document.getElementById('closeTareasRevisionModal').addEventListener('click', cerrarTareasRevisionModal);
+    document.getElementById('cerrarTareasRevision').addEventListener('click', cerrarTareasRevisionModal);
     document.getElementById('clearMap').addEventListener('click', clearMap);
     
     // Event listener para exportar Excel
