@@ -1200,7 +1200,7 @@ app = Flask(__name__)
 CORS(app)
 
 # Incrementar en cada publicación (cache-bust del navegador)
-GIS_APP_BUILD = os.getenv('GIS_APP_BUILD', '20261028-revision-recurso-15')
+GIS_APP_BUILD = os.getenv('GIS_APP_BUILD', '20261028-revision-unica-16')
 
 app.config['SECRET_KEY'] = Config.SECRET_KEY
 app.config['SESSION_COOKIE_HTTPONLY'] = True
@@ -3790,9 +3790,20 @@ def _recursos_por_numero(codigos):
     return recursos
 
 
+def _marcar_tipo_revision(tareas, tipo):
+    marcadas = []
+    for tarea in tareas or []:
+        if not isinstance(tarea, dict):
+            continue
+        item = dict(tarea)
+        item['tipo'] = tipo
+        marcadas.append(item)
+    return marcadas
+
+
 @app.route('/api/tareas-revision', methods=['POST'])
 def obtener_tareas_revision():
-    """Tareas de revisión de paradas (GtaskMalla_GetTareasRevision)."""
+    """Tareas de revisión de paradas y de recursos. El tipo lo marca el registro de BC."""
     try:
         parsed, error = _fechas_revision_desde_body()
         if error:
@@ -3812,20 +3823,52 @@ def obtener_tareas_revision():
         codigo = (data.get('codigoEmplazamiento') or '').strip()
         if codigo:
             json_input['codigoEmplazamiento'] = codigo
-        tareas = _consultar_tareas_bc('GetTareasRevision', json_input)
-        codigos = [t.get('codigoEmplazamiento') for t in tareas if isinstance(t, dict)]
+
+        avisos = []
+        try:
+            tareas_parada = _marcar_tipo_revision(
+                _consultar_tareas_bc('GetTareasRevision', json_input),
+                'parada',
+            )
+        except Exception as e:
+            tareas_parada = []
+            avisos.append(f'Paradas: {e}')
+        try:
+            json_recurso = {
+                'fechaDesde': parsed['fechaDesde'],
+                'fechaHasta': parsed['fechaHasta'],
+            }
+            codigo_recurso = (data.get('codigoRecurso') or '').strip()
+            if codigo_recurso:
+                json_recurso['codigoRecurso'] = codigo_recurso
+            tareas_recurso = _marcar_tipo_revision(
+                _consultar_tareas_bc('GetTareasRevisionRecurso', json_recurso),
+                'recurso',
+            )
+        except Exception as e:
+            tareas_recurso = []
+            avisos.append(f'Recursos: {e}')
+
+        if avisos and not tareas_parada and not tareas_recurso:
+            return jsonify({'success': False, 'error': ' '.join(avisos)}), 502
+
+        tareas = tareas_parada + tareas_recurso
         return jsonify({
             'success': True,
-            'tipo': 'parada',
             'tareas': tareas,
-            'paradas': _paradas_por_emplazamiento(codigos),
+            'paradas': _paradas_por_emplazamiento(
+                [t.get('codigoEmplazamiento') for t in tareas_parada]
+            ),
+            'recursos': _recursos_por_numero(
+                [t.get('recurso') for t in tareas_recurso]
+            ),
             'count': len(tareas),
+            'paradas_count': len(tareas_parada),
+            'recursos_count': len(tareas_recurso),
+            'avisos': avisos,
         })
     except json.JSONDecodeError as e:
         return jsonify({'success': False, 'error': f'Error al parsear respuesta de BC: {e}'}), 502
-    except requests.HTTPError as e:
-        status = e.response.status_code if e.response is not None else 502
-        return jsonify({'success': False, 'error': str(e)}), status
     except Exception as e:
         print(f'Error en /api/tareas-revision: {e}')
         return jsonify({'success': False, 'error': str(e)}), 500

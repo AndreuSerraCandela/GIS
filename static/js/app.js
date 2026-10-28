@@ -3238,23 +3238,26 @@ function colorEstadoRevision(estado) {
     return '#6c757d';
 }
 
-function codigoTareaRevision(tarea, modo) {
-    if (modo === 'recurso') return String(tarea.recurso || '').trim();
+function tipoTareaRevision(tarea) {
+    return tarea?.tipo === 'recurso' ? 'recurso' : 'parada';
+}
+
+function codigoTareaRevision(tarea) {
+    if (tipoTareaRevision(tarea) === 'recurso') return String(tarea.recurso || '').trim();
     return String(tarea.codigoEmplazamiento || '').trim();
 }
 
-function coordsTareaRevision(tarea, ficha, modo) {
+function coordsTareaRevision(tarea, ficha) {
     let lat = ficha ? parseFloat(ficha.PuntoY) : NaN;
     let lon = ficha ? parseFloat(ficha.PuntoX) : NaN;
-    if (modo === 'recurso' && (isNaN(lat) || isNaN(lon) || lat === 0 || lon === 0)) {
+    if (tipoTareaRevision(tarea) === 'recurso' && (isNaN(lat) || isNaN(lon) || lat === 0 || lon === 0)) {
         lat = parseFloat(tarea.puntoY);
         lon = parseFloat(tarea.puntoX);
     }
     return { lat, lon };
 }
 
-function mostrarTareasRevisionEnMapa(tareas, fichas, modo) {
-    const esRecurso = modo === 'recurso';
+function mostrarTareasRevisionEnMapa(tareas, result) {
     if (tareasRevisionLayer) {
         map.removeLayer(tareasRevisionLayer);
         tareasRevisionLayer = null;
@@ -3262,17 +3265,23 @@ function mostrarTareasRevisionEnMapa(tareas, fichas, modo) {
     tareasRevisionLayer = L.layerGroup();
     const grupos = new Map();
     (tareas || []).forEach((tarea) => {
-        const codigo = codigoTareaRevision(tarea, modo);
+        const tipo = tipoTareaRevision(tarea);
+        const codigo = codigoTareaRevision(tarea);
         if (!codigo) return;
-        if (!grupos.has(codigo)) grupos.set(codigo, []);
-        grupos.get(codigo).push(tarea);
+        const clave = `${tipo}:${codigo}`;
+        if (!grupos.has(clave)) grupos.set(clave, []);
+        grupos.get(clave).push(tarea);
     });
 
     const bounds = [];
     let sinCoordenadas = 0;
-    grupos.forEach((lista, codigo) => {
-        const ficha = (fichas || {})[codigo] || (fichas || {})[String(codigo)];
-        const { lat, lon } = coordsTareaRevision(lista[0], ficha, modo);
+    grupos.forEach((lista) => {
+        const tipo = tipoTareaRevision(lista[0]);
+        const esRecurso = tipo === 'recurso';
+        const codigo = codigoTareaRevision(lista[0]);
+        const fichas = esRecurso ? (result.recursos || {}) : (result.paradas || {});
+        const ficha = fichas[codigo] || fichas[String(codigo)];
+        const { lat, lon } = coordsTareaRevision(lista[0], ficha);
         if (isNaN(lat) || isNaN(lon) || lat === 0 || lon === 0) {
             sinCoordenadas += 1;
             return;
@@ -3319,7 +3328,7 @@ function mostrarTareasRevisionEnMapa(tareas, fichas, modo) {
     return { pintadas: bounds.length, sinCoordenadas };
 }
 
-function mostrarTareasRevision(tareas, count, fechaDesde, fechaHasta, modo) {
+function mostrarTareasRevision(tareas, count, fechaDesde, fechaHasta) {
     const modalContent = document.getElementById('tareasRevisionModalContent');
     if (!modalContent) return;
     if (!tareas.length) {
@@ -3341,7 +3350,7 @@ function mostrarTareasRevision(tareas, count, fechaDesde, fechaHasta, modo) {
         <table style="width:100%;border-collapse:collapse;font-size:0.85rem;">
             <thead>
                 <tr style="background:#f8f9fa;">
-                    <th style="padding:8px;border:1px solid #dee2e6;text-align:left;">${modo === 'recurso' ? 'Recurso' : 'Parada'}</th>
+                    <th style="padding:8px;border:1px solid #dee2e6;text-align:left;">Elemento</th>
                     <th style="padding:8px;border:1px solid #dee2e6;text-align:left;">Dirección</th>
                     <th style="padding:8px;border:1px solid #dee2e6;text-align:left;">Estado</th>
                     <th style="padding:8px;border:1px solid #dee2e6;text-align:left;">Inicio</th>
@@ -3355,10 +3364,12 @@ function mostrarTareasRevision(tareas, count, fechaDesde, fechaHasta, modo) {
             html += `<tr style="background:#e7e9fc;"><td colspan="5" style="padding:8px;border:1px solid #dee2e6;font-weight:bold;">Zona ${escapeHtmlRevision(zona)} · ${escapeHtmlRevision(resp)} (${grupo.length})</td></tr>`;
             grupo.forEach((tarea, index) => {
                 const bg = index % 2 ? '#f8f9fa' : '#fff';
-                const codigo = modo === 'recurso' ? (tarea.recurso || '—') : (tarea.codigoEmplazamiento || '—');
-                const detalle = modo === 'recurso' ? (tarea.recursoNombre || '') : (tarea.descripcionEmplazamiento || '');
+                const esRecurso = tipoTareaRevision(tarea) === 'recurso';
+                const codigo = esRecurso ? (tarea.recurso || '—') : (tarea.codigoEmplazamiento || '—');
+                const detalle = esRecurso ? (tarea.recursoNombre || '') : (tarea.descripcionEmplazamiento || '');
+                const etiqueta = esRecurso ? 'Recurso' : 'Parada';
                 html += `<tr style="background:${bg};">
-                    <td style="padding:8px;border:1px solid #dee2e6;">${escapeHtmlRevision(codigo)}${detalle ? `<br><small>${escapeHtmlRevision(detalle)}</small>` : ''}</td>
+                    <td style="padding:8px;border:1px solid #dee2e6;">${etiqueta} ${escapeHtmlRevision(codigo)}${detalle ? `<br><small>${escapeHtmlRevision(detalle)}</small>` : ''}</td>
                     <td style="padding:8px;border:1px solid #dee2e6;">${escapeHtmlRevision(tarea.direccion || '—')}</td>
                     <td style="padding:8px;border:1px solid #dee2e6;"><span style="background:${colorEstadoRevision(tarea.estado)};color:#fff;padding:2px 6px;border-radius:4px;">${escapeHtmlRevision(tarea.estado || '—')}</span></td>
                     <td style="padding:8px;border:1px solid #dee2e6;">${formatearFechaRevision(tarea.fechaInicio)} ${escapeHtmlRevision(tarea.horaInicio || '')}</td>
@@ -3372,15 +3383,6 @@ function mostrarTareasRevision(tareas, count, fechaDesde, fechaHasta, modo) {
 }
 
 async function consultarTareasRevision() {
-    return consultarTareasRevisionModo('parada');
-}
-
-async function consultarTareasRevisionRecurso() {
-    return consultarTareasRevisionModo('recurso');
-}
-
-async function consultarTareasRevisionModo(modo) {
-    const esRecurso = modo === 'recurso';
     const fechaDesde = document.getElementById('fechaDesde')?.value || '';
     const fechaHasta = document.getElementById('fechaHasta')?.value || '';
     if (!fechaDesde || !fechaHasta) {
@@ -3391,13 +3393,11 @@ async function consultarTareasRevisionModo(modo) {
     const modalContent = document.getElementById('tareasRevisionModalContent');
     const titulo = document.getElementById('tareasRevisionModalTitle');
     if (!modal || !modalContent) return;
-    if (titulo) {
-        titulo.textContent = esRecurso ? '📌 Tareas de revisión de recursos' : '🛣️ Tareas de revisión de paradas';
-    }
+    if (titulo) titulo.textContent = '🛣️ Tareas de revisión';
     modal.style.display = 'flex';
-    modalContent.innerHTML = `<p>Consultando tareas de revisión${esRecurso ? ' de recursos' : ''}…</p>`;
+    modalContent.innerHTML = '<p>Consultando tareas de revisión…</p>';
     try {
-        const response = await fetch(esRecurso ? '/api/tareas-revision-recurso' : '/api/tareas-revision', {
+        const response = await fetch('/api/tareas-revision', {
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
@@ -3408,13 +3408,13 @@ async function consultarTareasRevisionModo(modo) {
             throw new Error(result.error || `HTTP ${response.status}`);
         }
         const tareas = result.tareas || [];
-        const fichas = esRecurso ? (result.recursos || {}) : (result.paradas || {});
-        const mapa = mostrarTareasRevisionEnMapa(tareas, fichas, modo);
-        mostrarTareasRevision(tareas, result.count || tareas.length, fechaDesde, fechaHasta, modo);
+        const mapa = mostrarTareasRevisionEnMapa(tareas, result);
+        mostrarTareasRevision(tareas, result.count || tareas.length, fechaDesde, fechaHasta);
         const extra = mapa.sinCoordenadas
-            ? ` (${mapa.sinCoordenadas} ${esRecurso ? 'recurso(s)' : 'parada(s)'} sin coordenadas)`
+            ? ` (${mapa.sinCoordenadas} sin coordenadas)`
             : '';
-        showNotification(`${tareas.length} tareas de revisión · ${mapa.pintadas} en el mapa${extra}`, 'success');
+        const partes = `${result.paradas_count || 0} de paradas · ${result.recursos_count || 0} de recursos`;
+        showNotification(`${tareas.length} tareas de revisión (${partes}) · ${mapa.pintadas} en el mapa${extra}`, 'success');
     } catch (error) {
         modalContent.innerHTML = `<p style="color:#dc3545;">No se han podido consultar las tareas de revisión.</p><p>${escapeHtmlRevision(error.message)}</p>`;
         showNotification(error.message, 'error');
@@ -3531,7 +3531,6 @@ document.addEventListener('DOMContentLoaded', async function() {
     document.getElementById('loadRecursos').addEventListener('click', loadRecursos);
     document.getElementById('loadMobiliario').addEventListener('click', loadMobiliario);
     document.getElementById('consultarTareasRevision').addEventListener('click', consultarTareasRevision);
-    document.getElementById('consultarTareasRevisionRecurso').addEventListener('click', consultarTareasRevisionRecurso);
     document.getElementById('closeTareasRevisionModal').addEventListener('click', cerrarTareasRevisionModal);
     document.getElementById('cerrarTareasRevision').addEventListener('click', cerrarTareasRevisionModal);
     document.getElementById('clearMap').addEventListener('click', clearMap);
