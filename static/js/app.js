@@ -3238,27 +3238,42 @@ function colorEstadoRevision(estado) {
     return '#6c757d';
 }
 
-function mostrarTareasRevisionEnMapa(tareas, paradas) {
+function codigoTareaRevision(tarea, modo) {
+    if (modo === 'recurso') return String(tarea.recurso || '').trim();
+    return String(tarea.codigoEmplazamiento || '').trim();
+}
+
+function coordsTareaRevision(tarea, ficha, modo) {
+    let lat = ficha ? parseFloat(ficha.PuntoY) : NaN;
+    let lon = ficha ? parseFloat(ficha.PuntoX) : NaN;
+    if (modo === 'recurso' && (isNaN(lat) || isNaN(lon) || lat === 0 || lon === 0)) {
+        lat = parseFloat(tarea.puntoY);
+        lon = parseFloat(tarea.puntoX);
+    }
+    return { lat, lon };
+}
+
+function mostrarTareasRevisionEnMapa(tareas, fichas, modo) {
+    const esRecurso = modo === 'recurso';
     if (tareasRevisionLayer) {
         map.removeLayer(tareasRevisionLayer);
         tareasRevisionLayer = null;
     }
     tareasRevisionLayer = L.layerGroup();
-    const porParada = new Map();
+    const grupos = new Map();
     (tareas || []).forEach((tarea) => {
-        const codigo = String(tarea.codigoEmplazamiento || '').trim();
+        const codigo = codigoTareaRevision(tarea, modo);
         if (!codigo) return;
-        if (!porParada.has(codigo)) porParada.set(codigo, []);
-        porParada.get(codigo).push(tarea);
+        if (!grupos.has(codigo)) grupos.set(codigo, []);
+        grupos.get(codigo).push(tarea);
     });
 
     const bounds = [];
     let sinCoordenadas = 0;
-    porParada.forEach((lista, codigo) => {
-        const parada = paradas[codigo] || paradas[String(codigo)];
-        const lat = parada ? parseFloat(parada.PuntoY) : NaN;
-        const lon = parada ? parseFloat(parada.PuntoX) : NaN;
-        if (!parada || isNaN(lat) || isNaN(lon) || lat === 0 || lon === 0) {
+    grupos.forEach((lista, codigo) => {
+        const ficha = (fichas || {})[codigo] || (fichas || {})[String(codigo)];
+        const { lat, lon } = coordsTareaRevision(lista[0], ficha, modo);
+        if (isNaN(lat) || isNaN(lon) || lat === 0 || lon === 0) {
             sinCoordenadas += 1;
             return;
         }
@@ -3267,10 +3282,14 @@ function mostrarTareasRevisionEnMapa(tareas, paradas) {
             return estado.includes('finaliz') || estado.includes('complet');
         });
         const color = todasFinalizadas ? '#28a745' : '#ff8800';
+        const emoji = esRecurso ? '📌' : '🛣️';
+        const nombre = esRecurso
+            ? (ficha?.Name || lista[0].recursoNombre || '')
+            : (ficha?.Descripción || ficha?.['Dirección'] || lista[0].descripcionEmplazamiento || '');
         const marker = L.marker([lat, lon], {
             icon: L.divIcon({
                 className: 'tareas-revision-marker',
-                html: `<div style="background:${color};color:#fff;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;border:3px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.35);">🛣️</div>`,
+                html: `<div style="background:${color};color:#fff;width:32px;height:32px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;border:3px solid #fff;box-shadow:0 2px 6px rgba(0,0,0,.35);">${emoji}</div>`,
                 iconSize: [32, 32],
                 iconAnchor: [16, 16],
             }),
@@ -3281,10 +3300,11 @@ function mostrarTareasRevisionEnMapa(tareas, paradas) {
                 · ${escapeHtmlRevision(t.responsable || 'Sin responsable')}
                 · ${formatearFechaRevision(t.fechaInicio)}
             </li>`).join('');
+        const titulo = esRecurso ? `recurso ${codigo}` : `parada ${codigo}`;
         marker.bindPopup(`
             <div style="max-width:320px;">
-                <h4 style="margin:0 0 6px;">🛣️ Revisión · parada ${escapeHtmlRevision(codigo)}</h4>
-                <p style="margin:0 0 6px;">${escapeHtmlRevision(parada.Descripción || parada['Dirección'] || '')}</p>
+                <h4 style="margin:0 0 6px;">${emoji} Revisión · ${escapeHtmlRevision(titulo)}</h4>
+                <p style="margin:0 0 6px;">${escapeHtmlRevision(nombre)}</p>
                 <p style="margin:0 0 6px;"><strong>${lista.length}</strong> tarea(s)</p>
                 <ul style="margin:0;padding-left:18px;">${filas}</ul>
             </div>
@@ -3299,7 +3319,7 @@ function mostrarTareasRevisionEnMapa(tareas, paradas) {
     return { pintadas: bounds.length, sinCoordenadas };
 }
 
-function mostrarTareasRevision(tareas, count, fechaDesde, fechaHasta) {
+function mostrarTareasRevision(tareas, count, fechaDesde, fechaHasta, modo) {
     const modalContent = document.getElementById('tareasRevisionModalContent');
     if (!modalContent) return;
     if (!tareas.length) {
@@ -3321,7 +3341,7 @@ function mostrarTareasRevision(tareas, count, fechaDesde, fechaHasta) {
         <table style="width:100%;border-collapse:collapse;font-size:0.85rem;">
             <thead>
                 <tr style="background:#f8f9fa;">
-                    <th style="padding:8px;border:1px solid #dee2e6;text-align:left;">Parada</th>
+                    <th style="padding:8px;border:1px solid #dee2e6;text-align:left;">${modo === 'recurso' ? 'Recurso' : 'Parada'}</th>
                     <th style="padding:8px;border:1px solid #dee2e6;text-align:left;">Dirección</th>
                     <th style="padding:8px;border:1px solid #dee2e6;text-align:left;">Estado</th>
                     <th style="padding:8px;border:1px solid #dee2e6;text-align:left;">Inicio</th>
@@ -3335,8 +3355,10 @@ function mostrarTareasRevision(tareas, count, fechaDesde, fechaHasta) {
             html += `<tr style="background:#e7e9fc;"><td colspan="5" style="padding:8px;border:1px solid #dee2e6;font-weight:bold;">Zona ${escapeHtmlRevision(zona)} · ${escapeHtmlRevision(resp)} (${grupo.length})</td></tr>`;
             grupo.forEach((tarea, index) => {
                 const bg = index % 2 ? '#f8f9fa' : '#fff';
+                const codigo = modo === 'recurso' ? (tarea.recurso || '—') : (tarea.codigoEmplazamiento || '—');
+                const detalle = modo === 'recurso' ? (tarea.recursoNombre || '') : (tarea.descripcionEmplazamiento || '');
                 html += `<tr style="background:${bg};">
-                    <td style="padding:8px;border:1px solid #dee2e6;">${escapeHtmlRevision(tarea.codigoEmplazamiento || '—')}${tarea.descripcionEmplazamiento ? `<br><small>${escapeHtmlRevision(tarea.descripcionEmplazamiento)}</small>` : ''}</td>
+                    <td style="padding:8px;border:1px solid #dee2e6;">${escapeHtmlRevision(codigo)}${detalle ? `<br><small>${escapeHtmlRevision(detalle)}</small>` : ''}</td>
                     <td style="padding:8px;border:1px solid #dee2e6;">${escapeHtmlRevision(tarea.direccion || '—')}</td>
                     <td style="padding:8px;border:1px solid #dee2e6;"><span style="background:${colorEstadoRevision(tarea.estado)};color:#fff;padding:2px 6px;border-radius:4px;">${escapeHtmlRevision(tarea.estado || '—')}</span></td>
                     <td style="padding:8px;border:1px solid #dee2e6;">${formatearFechaRevision(tarea.fechaInicio)} ${escapeHtmlRevision(tarea.horaInicio || '')}</td>
@@ -3350,6 +3372,15 @@ function mostrarTareasRevision(tareas, count, fechaDesde, fechaHasta) {
 }
 
 async function consultarTareasRevision() {
+    return consultarTareasRevisionModo('parada');
+}
+
+async function consultarTareasRevisionRecurso() {
+    return consultarTareasRevisionModo('recurso');
+}
+
+async function consultarTareasRevisionModo(modo) {
+    const esRecurso = modo === 'recurso';
     const fechaDesde = document.getElementById('fechaDesde')?.value || '';
     const fechaHasta = document.getElementById('fechaHasta')?.value || '';
     if (!fechaDesde || !fechaHasta) {
@@ -3358,11 +3389,15 @@ async function consultarTareasRevision() {
     }
     const modal = document.getElementById('tareasRevisionModal');
     const modalContent = document.getElementById('tareasRevisionModalContent');
+    const titulo = document.getElementById('tareasRevisionModalTitle');
     if (!modal || !modalContent) return;
+    if (titulo) {
+        titulo.textContent = esRecurso ? '📌 Tareas de revisión de recursos' : '🛣️ Tareas de revisión de paradas';
+    }
     modal.style.display = 'flex';
-    modalContent.innerHTML = '<p>Consultando tareas de revisión…</p>';
+    modalContent.innerHTML = `<p>Consultando tareas de revisión${esRecurso ? ' de recursos' : ''}…</p>`;
     try {
-        const response = await fetch('/api/tareas-revision', {
+        const response = await fetch(esRecurso ? '/api/tareas-revision-recurso' : '/api/tareas-revision', {
             method: 'POST',
             credentials: 'same-origin',
             headers: { 'Content-Type': 'application/json' },
@@ -3373,10 +3408,11 @@ async function consultarTareasRevision() {
             throw new Error(result.error || `HTTP ${response.status}`);
         }
         const tareas = result.tareas || [];
-        const mapa = mostrarTareasRevisionEnMapa(tareas, result.paradas || {});
-        mostrarTareasRevision(tareas, result.count || tareas.length, fechaDesde, fechaHasta);
+        const fichas = esRecurso ? (result.recursos || {}) : (result.paradas || {});
+        const mapa = mostrarTareasRevisionEnMapa(tareas, fichas, modo);
+        mostrarTareasRevision(tareas, result.count || tareas.length, fechaDesde, fechaHasta, modo);
         const extra = mapa.sinCoordenadas
-            ? ` (${mapa.sinCoordenadas} parada(s) sin coordenadas)`
+            ? ` (${mapa.sinCoordenadas} ${esRecurso ? 'recurso(s)' : 'parada(s)'} sin coordenadas)`
             : '';
         showNotification(`${tareas.length} tareas de revisión · ${mapa.pintadas} en el mapa${extra}`, 'success');
     } catch (error) {
@@ -3495,6 +3531,7 @@ document.addEventListener('DOMContentLoaded', async function() {
     document.getElementById('loadRecursos').addEventListener('click', loadRecursos);
     document.getElementById('loadMobiliario').addEventListener('click', loadMobiliario);
     document.getElementById('consultarTareasRevision').addEventListener('click', consultarTareasRevision);
+    document.getElementById('consultarTareasRevisionRecurso').addEventListener('click', consultarTareasRevisionRecurso);
     document.getElementById('closeTareasRevisionModal').addEventListener('click', cerrarTareasRevisionModal);
     document.getElementById('cerrarTareasRevision').addEventListener('click', cerrarTareasRevisionModal);
     document.getElementById('clearMap').addEventListener('click', clearMap);
