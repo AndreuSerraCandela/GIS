@@ -3382,7 +3382,53 @@ function mostrarTareasRevision(tareas, count, fechaDesde, fechaHasta) {
     modalContent.innerHTML = html;
 }
 
-async function consultarTareasRevision() {
+function recursosSeleccionadosSinRevision(tareas) {
+    const seleccion = Array.from(recursosSeleccionados).map((codigo) => String(codigo).trim()).filter(Boolean);
+    if (!seleccion.length) return [];
+    const conTarea = new Set();
+    (tareas || []).forEach((tarea) => {
+        if (tipoTareaRevision(tarea) !== 'recurso') return;
+        const codigo = String(tarea.recurso || '').trim();
+        if (codigo) conTarea.add(codigo);
+    });
+    const sinTarea = seleccion.filter((codigo) => !conTarea.has(codigo));
+    if (sinTarea.length !== seleccion.length) return [];
+    return seleccion;
+}
+
+async function ofrecerCrearTareasRevisionRecursos(tareas, fechaDesde) {
+    const codigos = recursosSeleccionadosSinRevision(tareas);
+    if (!codigos.length) return;
+    const crear = window.confirm('No hay tareas de revisión de estos recursos para estas fechas. ¿Las creamos?');
+    if (!crear) return;
+    const response = await fetch('/api/tareas-revision-recurso/crear', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ fecha: fechaDesde, recursos: codigos }),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.success) {
+        throw new Error(result.error || `HTTP ${response.status}`);
+    }
+    const omitidos = Array.isArray(result.omitidos) ? result.omitidos : [];
+    const partes = [`Creadas ${result.tareasCreadas || 0}`];
+    if (result.tareasExistentes) partes.push(`ya existían ${result.tareasExistentes}`);
+    if (omitidos.length) {
+        const detalle = omitidos
+            .map((item) => `${item.recurso || '—'}: ${item.motivo || 'omitido'}`)
+            .join('; ');
+        partes.push(`sin crear ${omitidos.length} (${detalle})`);
+    }
+    const tipo = (result.tareasCreadas || 0) > 0 ? 'success' : 'warning';
+    showNotification(partes.join('. ') + '.', tipo, 12000);
+    if ((result.tareasCreadas || 0) > 0 || (result.tareasExistentes || 0) > 0) {
+        await consultarTareasRevision({ omitirOferta: true });
+    }
+}
+
+async function consultarTareasRevision(opciones) {
+    const omitirOferta = !!(opciones && opciones.omitirOferta);
     const fechaDesde = document.getElementById('fechaDesde')?.value || '';
     const fechaHasta = document.getElementById('fechaHasta')?.value || '';
     if (!fechaDesde || !fechaHasta) {
@@ -3415,6 +3461,9 @@ async function consultarTareasRevision() {
             : '';
         const partes = `${result.paradas_count || 0} de paradas · ${result.recursos_count || 0} de recursos`;
         showNotification(`${tareas.length} tareas de revisión (${partes}) · ${mapa.pintadas} en el mapa${extra}`, 'success');
+        if (!omitirOferta) {
+            await ofrecerCrearTareasRevisionRecursos(tareas, fechaDesde);
+        }
     } catch (error) {
         modalContent.innerHTML = `<p style="color:#dc3545;">No se han podido consultar las tareas de revisión.</p><p>${escapeHtmlRevision(error.message)}</p>`;
         showNotification(error.message, 'error');

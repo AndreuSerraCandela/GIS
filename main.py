@@ -1200,7 +1200,7 @@ app = Flask(__name__)
 CORS(app)
 
 # Incrementar en cada publicación (cache-bust del navegador)
-GIS_APP_BUILD = os.getenv('GIS_APP_BUILD', '20261028-revision-unica-16')
+GIS_APP_BUILD = os.getenv('GIS_APP_BUILD', '20261029-revision-recurso-crear-17')
 
 app.config['SECRET_KEY'] = Config.SECRET_KEY
 app.config['SESSION_COOKIE_HTTPONLY'] = True
@@ -3685,8 +3685,8 @@ def get_file():
         print(f"❌ Traceback completo: {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
-def _consultar_tareas_bc(metodo, json_input):
-    """Llama a un método OData GtaskMalla_* que recibe jsonText y devuelve una lista."""
+def _post_gtask(metodo, json_input):
+    """POST OData GtaskMalla_* con jsonText. Devuelve el JSON ya parseado (lista u objeto)."""
     base_url = (BC_CONFIG.get('base_url') or '').rstrip('/')
     company = BC_CONFIG.get('company', 'Malla Publicidad')
     url = f"{base_url}/ODataV4/GtaskMalla_{metodo}?company='{company}'"
@@ -3713,9 +3713,13 @@ def _consultar_tareas_bc(metodo, json_input):
     raw = result_data.get('value', result_data)
     if isinstance(raw, str):
         raw = raw.replace('\r\n', ' ').replace('\n', ' ').strip()
-        tareas = json.loads(raw) if raw else []
-    else:
-        tareas = raw
+        return json.loads(raw) if raw else None
+    return raw
+
+
+def _consultar_tareas_bc(metodo, json_input):
+    """Llama a un método OData GtaskMalla_* que recibe jsonText y devuelve una lista."""
+    tareas = _post_gtask(metodo, json_input)
     if isinstance(tareas, dict):
         tareas = tareas.get('tareas') or tareas.get('value') or []
     if not isinstance(tareas, list):
@@ -3906,6 +3910,50 @@ def obtener_tareas_revision_recurso():
         return jsonify({'success': False, 'error': str(e)}), status
     except Exception as e:
         print(f'Error en /api/tareas-revision-recurso: {e}')
+        return jsonify({'success': False, 'error': str(e)}), 500
+
+
+@app.route('/api/tareas-revision-recurso/crear', methods=['POST'])
+def crear_tareas_revision_recurso():
+    """Crea tareas de revisión para los recursos indicados (GtaskMalla_CrearTareasRevisionRecurso)."""
+    data = request.get_json(silent=True) or {}
+    fecha = (data.get('fecha') or data.get('fechaDesde') or '').strip()
+    recursos = data.get('recursos') or []
+    if not isinstance(recursos, list):
+        return jsonify({'success': False, 'error': 'Indica la lista de recursos'}), 400
+    codigos = []
+    vistos = set()
+    for codigo in recursos:
+        texto = str(codigo or '').strip()
+        if not texto or texto in vistos:
+            continue
+        vistos.add(texto)
+        codigos.append(texto)
+    if not codigos:
+        return jsonify({'success': False, 'error': 'No hay recursos seleccionados'}), 400
+    if not fecha:
+        return jsonify({'success': False, 'error': 'Indica la fecha de la tarea'}), 400
+    try:
+        resultado = _post_gtask('CrearTareasRevisionRecurso', {
+            'fecha': fecha,
+            'recursos': codigos[:500],
+        })
+        if not isinstance(resultado, dict):
+            return jsonify({'success': False, 'error': 'Respuesta inesperada de Business Central'}), 502
+        omitidos = resultado.get('omitidos') or []
+        return jsonify({
+            'success': True,
+            'tareasCreadas': int(resultado.get('tareasCreadas') or 0),
+            'tareasExistentes': int(resultado.get('tareasExistentes') or 0),
+            'omitidos': omitidos if isinstance(omitidos, list) else [],
+        })
+    except json.JSONDecodeError as e:
+        return jsonify({'success': False, 'error': f'Error al parsear respuesta de BC: {e}'}), 502
+    except requests.HTTPError as e:
+        status = e.response.status_code if e.response is not None else 502
+        return jsonify({'success': False, 'error': str(e)}), status
+    except Exception as e:
+        print(f'Error en /api/tareas-revision-recurso/crear: {e}')
         return jsonify({'success': False, 'error': str(e)}), 500
 
 
